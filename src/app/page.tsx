@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import type { RiskLog, ForensicDetails } from '@/types/risk';
 import { TRUST_PROFILES } from '@/types/risk';
+import SovereignConfigurator from '@/components/SovereignConfigurator';
 
 function parseForensicDetails(detailsJson: string): ForensicDetails | null {
   try {
@@ -77,7 +78,8 @@ export default function Home() {
   const [logs, setLogs] = useState<RiskLog[]>([]);
   const [forensicLog, setForensicLog] = useState<RiskLog | null>(null);
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
-  const [activeTab, setActiveTab] = useState<'traffic' | 'registry'>('traffic');
+  const [activeTab, setActiveTab] = useState<'traffic' | 'registry' | 'policy'>('traffic');
+  const [configuratorAddress, setConfiguratorAddress] = useState('');
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const fetchLogs = async () => {
@@ -189,7 +191,13 @@ export default function Home() {
             Registry
           </button>
           <button
-            onClick={activeTab === 'traffic' ? fetchLogs : fetchRegistry}
+            onClick={() => setActiveTab('policy')}
+            className={`px-4 py-2 rounded font-bold ${activeTab === 'policy' ? 'bg-red-600' : 'bg-slate-600 hover:bg-slate-500'}`}
+          >
+            Policy Configurator
+          </button>
+          <button
+            onClick={activeTab === 'traffic' ? fetchLogs : activeTab === 'registry' ? fetchRegistry : () => {}}
             className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded font-bold transition-all shadow-lg active:scale-95"
           >
             🔄 Refresh
@@ -229,6 +237,12 @@ export default function Home() {
                       <p className="text-xs text-slate-500">{entry.notes || 'No notes'}</p>
                     </div>
                     <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => { setConfiguratorAddress(entry.hexAddress); setActiveTab('policy'); }}
+                        className="text-[10px] bg-slate-600 hover:bg-slate-500 px-3 py-1 rounded font-bold"
+                      >
+                        Configure
+                      </button>
                       <select
                         value={entry.trustProfile}
                         onChange={(e) => handleUpdateProfile(entry.hexAddress, parseInt(e.target.value, 10))}
@@ -245,6 +259,17 @@ export default function Home() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {activeTab === 'policy' && (
+        <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
+          <h2 className="text-xl mb-4 text-slate-300 underline underline-offset-8">Policy Configurator</h2>
+          <p className="text-slate-400 text-sm mb-6">Select a defense posture and deploy to sync with Node .20.</p>
+          <SovereignConfigurator
+            targetAddress={configuratorAddress}
+            onAddressChange={setConfiguratorAddress}
+          />
         </div>
       )}
 
