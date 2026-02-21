@@ -130,6 +130,7 @@ export default function SovereignConfigurator({
         body.sovereignCap = settings.sovereignCap;
         body.sovereignCapWindowHours = settings.sovereignCapWindowHours;
         body.maxRiskFloor = settings.maxRiskFloor;
+        body.blockThreshold = settings.blockThreshold;
         body.minConfidenceCeiling = settings.minConfidenceCeiling;
         body.policyOverrides = settings;
       }

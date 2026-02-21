@@ -22,6 +22,7 @@ function parseForensicDetails(detailsJson: string): ForensicDetails | null {
       sovereignCap: get(dm, 'sovereignCap', 'SovereignCap') as number | null ?? null,
       calculatedRisk: Number(get(dm, 'calculatedRisk', 'CalculatedRisk')) || 0,
       maxRiskFloor: Number(get(dm, 'maxRiskFloor', 'MaxRiskFloor')) || 0,
+      blockThreshold: Number(get(dm, 'blockThreshold', 'BlockThreshold')) || 100,
       calculatedConfidence: Number(get(dm, 'calculatedConfidence', 'CalculatedConfidence')) || 0,
       minConfidenceCeiling: Number(get(dm, 'minConfidenceCeiling', 'MinConfidenceCeiling')) || 0,
       amountWithinCap: Boolean(get(dm, 'amountWithinCap', 'AmountWithinCap')),
@@ -145,15 +146,25 @@ export default function Home() {
       { body: { FromAddress: '0xUnknown_New_User', ToAddress: 'test_mature_wallet', Amount: '10' } },
     ];
     try {
+      const mfaScenarios: string[] = [];
       for (const { body } of scenarios) {
         const r = await fetch(baseUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
         });
-        if (!r.ok) throw new Error(`check-risk returned ${r.status}`);
+        if (r.status === 403) throw new Error('check-risk returned 403 (BLOCKED)');
+        if (r.status === 202) {
+          const data = await r.json().catch(() => ({}));
+          mfaScenarios.push(`${body.FromAddress} → ${body.ToAddress}: ${data.RiskAdvice || 'MFA required'}`);
+        } else if (!r.ok) throw new Error(`check-risk returned ${r.status}`);
       }
       await fetchLogs();
+      if (mfaScenarios.length > 0) {
+        setConnectionError(null);
+        // Toast-style notice: MFA was required for some scenarios (informational)
+        console.info('MFA Required for:', mfaScenarios);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       setConnectionError(`Traffic generation failed. Is PGTAIL.Engine running? ${msg}`);
@@ -282,6 +293,17 @@ export default function Home() {
 
       {activeTab === 'traffic' && <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
         <h2 className="text-xl mb-4 text-slate-300 underline underline-offset-8">Live Traffic Monitor</h2>
+        {logs.some((l) => getStatus(l) === 'MFA_REQUIRED') && (
+          <div className="mb-4 p-4 bg-amber-900/30 border border-amber-600/50 rounded-lg flex items-center gap-3">
+            <span className="text-2xl">⚠️</span>
+            <div>
+              <p className="font-bold text-amber-400">MFA Required — Trust-Range Breach</p>
+              <p className="text-sm text-amber-200/90">
+                One or more transactions require manual approval. Click &quot;View Forensics&quot; to see the specific breach (cap, risk, or confidence).
+              </p>
+            </div>
+          </div>
+        )}
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="border-b border-slate-600 text-slate-400">
@@ -375,6 +397,13 @@ function ForensicModal({ log, onClose }: { log: RiskLog; onClose: () => void }) 
           </div>
 
           <div className="space-y-4">
+            {status === 'MFA_REQUIRED' && (
+              <div className="p-4 bg-amber-900/40 border border-amber-600/60 rounded-lg">
+                <p className="text-sm font-bold text-amber-400 mb-1">Trust-Range Breach — MFA Required</p>
+                <p className="text-slate-200 text-sm">{details?.trustRangeReason || details?.decisionMatrix?.breachReason || log.reason || 'N/A'}</p>
+                <p className="text-xs text-amber-300/80 mt-2">User must manually approve or reject this transaction.</p>
+              </div>
+            )}
             <div className="p-3 bg-slate-900/50 rounded border border-slate-600">
               <p className="text-sm font-bold text-amber-400 mb-1">Risk Advice (Iron Sentry)</p>
               <p className="text-slate-200 text-sm">{details?.trustRangeReason || log.reason || 'N/A'}</p>
@@ -398,9 +427,14 @@ function ForensicModal({ log, onClose }: { log: RiskLog; onClose: () => void }) 
                   ok={Boolean(matrix.amountWithinCap)}
                 />
                 <CheckRow
-                  label="Risk Check (Risk vs. Floor)"
+                  label="Allow Check (Risk vs. Allow Threshold)"
                   value={`${matrix.calculatedRisk ?? 0} vs. ${matrix.maxRiskFloor ?? 0}`}
                   ok={Boolean(matrix.riskWithinFloor)}
+                />
+                <CheckRow
+                  label="Block Check (Risk vs. Block Threshold)"
+                  value={`${matrix.calculatedRisk ?? 0} vs. ${matrix.blockThreshold ?? 100}`}
+                  ok={(matrix.calculatedRisk ?? 0) < (matrix.blockThreshold ?? 100)}
                 />
                 <CheckRow
                   label="Confidence Check (Confidence vs. Ceiling)"

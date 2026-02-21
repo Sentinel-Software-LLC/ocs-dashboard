@@ -19,6 +19,7 @@ export interface DecisionMatrix {
   sovereignCap: number | null;
   calculatedRisk: number;
   maxRiskFloor: number;
+  blockThreshold?: number;
   calculatedConfidence: number;
   minConfidenceCeiling: number;
   amountWithinCap: boolean;
