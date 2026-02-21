@@ -38,6 +38,9 @@ function parseForensicDetails(detailsJson: string): ForensicDetails | null {
       trustRangeVerdict: String(raw.trustRangeVerdict ?? ''),
       trustRangeReason: String(raw.trustRangeReason ?? ''),
       trustProfile: String(raw.trustProfile ?? ''),
+      washSaleWarning: raw.washSaleWarning != null ? String(raw.washSaleWarning) : undefined,
+      decentralizationStatus: raw.decentralizationStatus != null ? String(raw.decentralizationStatus) : undefined,
+      ensSuspiciousWarning: raw.ensSuspiciousWarning != null ? String(raw.ensSuspiciousWarning) : undefined,
     };
   } catch {
     return null;
@@ -79,7 +82,7 @@ export default function Home() {
   const [logs, setLogs] = useState<RiskLog[]>([]);
   const [forensicLog, setForensicLog] = useState<RiskLog | null>(null);
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
-  const [activeTab, setActiveTab] = useState<'traffic' | 'registry' | 'policy'>('traffic');
+  const [activeTab, setActiveTab] = useState<'traffic' | 'registry' | 'policy' | 'audit'>('traffic');
   const [configuratorAddress, setConfiguratorAddress] = useState('');
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
@@ -135,36 +138,41 @@ export default function Home() {
   };
 
   const [generating, setGenerating] = useState(false);
+  const [incidentSwitchEnabled, setIncidentSwitchEnabled] = useState(false);
+  const [incidentSwitchLoading, setIncidentSwitchLoading] = useState(false);
   const generateTraffic = async () => {
     setGenerating(true);
     setConnectionError(null);
     const baseUrl = `${API_BASE}/check-risk`;
-    const scenarios = [
-      { body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '5' } },
-      { body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '5000' } },
-      { body: { FromAddress: 'test_peeling_chain', ToAddress: 'rff5UDgUy9NvcpDNWUqw4jwFMoXWu855Nt', Amount: '1' } },
-      { body: { FromAddress: '0xUnknown_New_User', ToAddress: 'test_mature_wallet', Amount: '10' } },
+    // Scenarios exercise each Policy Configurator setting and Engine feature. Update when adding new PI features.
+    const scenarios: { label: string; body: Record<string, unknown> }[] = [
+      { label: 'Sovereign Cap OK', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '5' } },
+      { label: 'Sovereign Cap breach (MFA)', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '5000' } },
+      { label: 'B1 HW wallet (above threshold, no HW)', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '5000', IsHardwareWallet: false } },
+      { label: 'Blacklist block', body: { FromAddress: 'test_peeling_chain', ToAddress: 'rff5UDgUy9NvcpDNWUqw4jwFMoXWu855Nt', Amount: '1' } },
+      { label: 'Registry miss', body: { FromAddress: '0xUnknown_New_User', ToAddress: 'test_mature_wallet', Amount: '10' } },
+      { label: 'I2 Slippage exceed (block)', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '100', TransactionType: 'dex_swap', MaxSlippagePercent: 1, SlippagePercent: 2.5 } },
+      { label: 'J1 Bridge chain mismatch (block)', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '100', TransactionType: 'bridge', BridgeChainId: 1, ExpectedChainId: 137 } },
+      { label: 'J2 Bridge MFA', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '500', TransactionType: 'bridge' } },
+      { label: 'I1 DEX swap (RecommendPrivateMempool)', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '50', TransactionType: 'dex_swap' } },
     ];
     try {
-      const mfaScenarios: string[] = [];
-      for (const { body } of scenarios) {
+      const results: string[] = [];
+      for (const { label, body } of scenarios) {
         const r = await fetch(baseUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
         });
-        if (r.status === 403) throw new Error('check-risk returned 403 (BLOCKED)');
-        if (r.status === 202) {
-          const data = await r.json().catch(() => ({}));
-          mfaScenarios.push(`${body.FromAddress} → ${body.ToAddress}: ${data.RiskAdvice || 'MFA required'}`);
-        } else if (!r.ok) throw new Error(`check-risk returned ${r.status}`);
+        const data = await r.json().catch(() => ({}));
+        if (r.status === 200) results.push(`${label}: OK`);
+        else if (r.status === 202) results.push(`${label}: MFA — ${data.RiskAdvice || 'required'}`);
+        else if (r.status === 403) results.push(`${label}: BLOCKED — ${data.Description || data.RiskAdvice || 'blocked'}`);
+        else results.push(`${label}: ${r.status}`);
       }
       await fetchLogs();
-      if (mfaScenarios.length > 0) {
-        setConnectionError(null);
-        // Toast-style notice: MFA was required for some scenarios (informational)
-        console.info('MFA Required for:', mfaScenarios);
-      }
+      setConnectionError(null);
+      console.info('Generate Traffic:', results);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       setConnectionError(`Traffic generation failed. Is PGTAIL.Engine running? ${msg}`);
@@ -174,7 +182,34 @@ export default function Home() {
     }
   };
 
+  const fetchIncidentSwitch = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/incident-switch`);
+      if (res.ok) {
+        const data = await res.json();
+        setIncidentSwitchEnabled(data.enabled === true);
+      }
+    } catch { /* ignore */ }
+  };
+
+  const toggleIncidentSwitch = async () => {
+    setIncidentSwitchLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/incident-switch`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !incidentSwitchEnabled })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setIncidentSwitchEnabled(data.enabled === true);
+      }
+    } catch { /* ignore */ }
+    finally { setIncidentSwitchLoading(false); }
+  };
+
   useEffect(() => { fetchLogs(); }, []);
+  useEffect(() => { fetchIncidentSwitch(); }, []);
   useEffect(() => { if (activeTab === 'registry') fetchRegistry(); }, [activeTab]);
 
   // Auto-refresh traffic every 5 seconds when on Live Traffic tab
@@ -186,6 +221,18 @@ export default function Home() {
 
   return (
     <main className="p-8 bg-slate-900 min-h-screen text-white font-sans">
+      {incidentSwitchEnabled && (
+        <div className="mb-4 p-4 bg-amber-900/50 border border-amber-600 rounded-lg flex items-center justify-between">
+          <span className="font-bold text-amber-400">E5 Incident Switch: ENABLED — Only whitelisted recipients allowed</span>
+          <button
+            onClick={toggleIncidentSwitch}
+            disabled={incidentSwitchLoading}
+            className="bg-amber-700 hover:bg-amber-600 px-4 py-2 rounded font-bold text-sm disabled:opacity-50"
+          >
+            {incidentSwitchLoading ? '…' : 'Disable'}
+          </button>
+        </div>
+      )}
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-3xl font-bold text-red-500 tracking-tight">OCS Station Master</h1>
         <div className="flex gap-2">
@@ -208,7 +255,21 @@ export default function Home() {
             Policy Configurator
           </button>
           <button
-            onClick={activeTab === 'traffic' ? fetchLogs : activeTab === 'registry' ? fetchRegistry : () => {}}
+            onClick={() => setActiveTab('audit')}
+            className={`px-4 py-2 rounded font-bold ${activeTab === 'audit' ? 'bg-red-600' : 'bg-slate-600 hover:bg-slate-500'}`}
+          >
+            Audit & Export
+          </button>
+          <button
+            onClick={toggleIncidentSwitch}
+            disabled={incidentSwitchLoading}
+            className={`px-4 py-2 rounded font-bold transition-all ${incidentSwitchEnabled ? 'bg-amber-600 hover:bg-amber-500' : 'bg-slate-600 hover:bg-slate-500'}`}
+            title="E5: Pause new recipients — only whitelisted allowed when enabled"
+          >
+            {incidentSwitchLoading ? '…' : (incidentSwitchEnabled ? '🛡️ Incident ON' : 'Incident Switch')}
+          </button>
+          <button
+            onClick={activeTab === 'traffic' ? fetchLogs : activeTab === 'registry' ? fetchRegistry : activeTab === 'audit' ? () => {} : () => {}}
             className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded font-bold transition-all shadow-lg active:scale-95"
           >
             🔄 Refresh
@@ -276,11 +337,68 @@ export default function Home() {
       {activeTab === 'policy' && (
         <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
           <h2 className="text-xl mb-4 text-slate-300 underline underline-offset-8">Policy Configurator</h2>
-          <p className="text-slate-400 text-sm mb-6">Select a defense posture and deploy to sync with Node .20.</p>
+          <p className="text-slate-400 text-sm mb-2">Select a defense posture and deploy to sync with Node .20.</p>
+          <p className="text-slate-500 text-xs mb-6">
+            Operator guide: <a href="https://github.com/onchainsentinel/ocs-docs/blob/main/01_architecture/OCS_Policy_Configuration_Guide.md" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">OCS_Policy_Configuration_Guide.md</a> — documents each setting.
+          </p>
           <SovereignConfigurator
             targetAddress={configuratorAddress}
             onAddressChange={setConfiguratorAddress}
           />
+        </div>
+      )}
+
+      {activeTab === 'audit' && (
+        <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
+          <h2 className="text-xl mb-4 text-slate-300 underline underline-offset-8">Audit & Export</h2>
+          <p className="text-slate-400 text-sm mb-6">Download forensic and compliance exports from the Engine.</p>
+          <div className="mb-8 p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+            <h3 className="text-sm font-bold text-slate-400 mb-3">Check Risk (I2 Slippage)</h3>
+            <p className="text-xs text-slate-500 mb-3">Test check-risk with optional swap params. For DEX swaps, set Max Slippage % to enforce I2 guard.</p>
+            <CheckRiskForm apiBase={API_BASE} onSuccess={() => fetchLogs()} />
+          </div>
+          <div className="flex flex-wrap gap-4">
+            <button
+              onClick={async () => {
+                try {
+                  const res = await fetch(`${API_BASE}/audit/export?format=csv`);
+                  if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+                  const blob = await res.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `ocs-disclosure-report-${new Date().toISOString().slice(0, 10)}.csv`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } catch (e) {
+                  setConnectionError(e instanceof Error ? e.message : 'CSV export failed');
+                }
+              }}
+              className="bg-blue-600 hover:bg-blue-500 px-6 py-3 rounded font-bold"
+            >
+              Export Disclosure Report (CSV) — N1
+            </button>
+            <button
+              onClick={async () => {
+                try {
+                  const res = await fetch(`${API_BASE}/audit/export/signed`);
+                  if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+                  const blob = await res.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `ocs-forensics-signed-${new Date().toISOString().slice(0, 10)}.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } catch (e) {
+                  setConnectionError(e instanceof Error ? e.message : 'Signed bundle export failed');
+                }
+              }}
+              className="bg-emerald-600 hover:bg-emerald-500 px-6 py-3 rounded font-bold"
+            >
+              Download Signed Forensics Bundle — F3
+            </button>
+          </div>
         </div>
       )}
 
@@ -377,6 +495,94 @@ export default function Home() {
   );
 }
 
+function CheckRiskForm({ apiBase, onSuccess }: { apiBase: string; onSuccess: () => void }) {
+  const [from, setFrom] = useState('test_trusted_partner');
+  const [to, setTo] = useState('test_mature_wallet');
+  const [amount, setAmount] = useState('100');
+  const [maxSlippage, setMaxSlippage] = useState('');
+  const [slippage, setSlippage] = useState('');
+  const [txType, setTxType] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    setLoading(true);
+    setResult(null);
+    try {
+      const body: Record<string, unknown> = {
+        FromAddress: from,
+        ToAddress: to,
+        Amount: amount,
+      };
+      if (txType) body.TransactionType = txType;
+      if (maxSlippage) body.MaxSlippagePercent = parseFloat(maxSlippage);
+      if (slippage) body.SlippagePercent = parseFloat(slippage);
+
+      const r = await fetch(`${apiBase}/check-risk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (r.status === 200) {
+        const data = await r.json();
+        setResult(`OK: ${data.precheckVerdict ?? data.trustRangeVerdict ?? 'PASS'}`);
+        onSuccess();
+      } else if (r.status === 202) {
+        const data = await r.json();
+        setResult(`MFA: ${data.riskAdvice ?? 'MFA required'}`);
+        onSuccess();
+      } else if (r.status === 403) {
+        const data = await r.json().catch(() => ({}));
+        setResult(`BLOCKED: ${data.description ?? data.riskAdvice ?? 'Blocked'}`);
+        onSuccess();
+      } else {
+        setResult(`Error: ${r.status}`);
+      }
+    } catch (e) {
+      setResult(e instanceof Error ? e.message : 'Request failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-end gap-4">
+      <div>
+        <label className="block text-xs text-slate-500 mb-1">From</label>
+        <input value={from} onChange={(e) => setFrom(e.target.value)} className="w-48 bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm" />
+      </div>
+      <div>
+        <label className="block text-xs text-slate-500 mb-1">To</label>
+        <input value={to} onChange={(e) => setTo(e.target.value)} className="w-48 bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm" />
+      </div>
+      <div>
+        <label className="block text-xs text-slate-500 mb-1">Amount</label>
+        <input value={amount} onChange={(e) => setAmount(e.target.value)} className="w-24 bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm" />
+      </div>
+      <div>
+        <label className="block text-xs text-slate-500 mb-1">Tx Type</label>
+        <select value={txType} onChange={(e) => setTxType(e.target.value)} className="bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm">
+          <option value="">—</option>
+          <option value="dex_swap">dex_swap</option>
+          <option value="bridge">bridge</option>
+        </select>
+      </div>
+      <div>
+        <label className="block text-xs text-slate-500 mb-1">Max Slippage % (I2)</label>
+        <input value={maxSlippage} onChange={(e) => setMaxSlippage(e.target.value)} placeholder="e.g. 1" className="w-20 bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm" />
+      </div>
+      <div>
+        <label className="block text-xs text-slate-500 mb-1">Slippage %</label>
+        <input value={slippage} onChange={(e) => setSlippage(e.target.value)} placeholder="e.g. 2" className="w-20 bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm" />
+      </div>
+      <button onClick={handleSubmit} disabled={loading} className="bg-red-600 hover:bg-red-500 disabled:opacity-50 px-4 py-2 rounded font-bold text-sm">
+        {loading ? '…' : 'Check Risk'}
+      </button>
+      {result && <span className="text-sm text-slate-300">{result}</span>}
+    </div>
+  );
+}
+
 function ForensicModal({ log, onClose }: { log: RiskLog; onClose: () => void }) {
   if (!log) return null;
   const details = parseForensicDetails(log.detailsJson ?? '');
@@ -402,6 +608,24 @@ function ForensicModal({ log, onClose }: { log: RiskLog; onClose: () => void }) 
                 <p className="text-sm font-bold text-amber-400 mb-1">Trust-Range Breach — MFA Required</p>
                 <p className="text-slate-200 text-sm">{details?.trustRangeReason || details?.decisionMatrix?.breachReason || log.reason || 'N/A'}</p>
                 <p className="text-xs text-amber-300/80 mt-2">User must manually approve or reject this transaction.</p>
+              </div>
+            )}
+            {details?.washSaleWarning && (
+              <div className="p-4 bg-amber-900/30 border border-amber-600/50 rounded-lg">
+                <p className="text-sm font-bold text-amber-400 mb-1">N2 Wash-Sale Warning</p>
+                <p className="text-slate-200 text-sm">{details.washSaleWarning}</p>
+              </div>
+            )}
+            {details?.decentralizationStatus && (
+              <div className="p-3 bg-slate-900/50 rounded border border-slate-600">
+                <p className="text-sm font-bold text-slate-400 mb-1">N3 Decentralization Status</p>
+                <p className="text-slate-200 text-sm">{details.decentralizationStatus}</p>
+              </div>
+            )}
+            {details?.ensSuspiciousWarning && (
+              <div className="p-4 bg-amber-900/30 border border-amber-600/50 rounded-lg">
+                <p className="text-sm font-bold text-amber-400 mb-1">K3 ENS/UNS Suspicious</p>
+                <p className="text-slate-200 text-sm">{details.ensSuspiciousWarning}</p>
               </div>
             )}
             <div className="p-3 bg-slate-900/50 rounded border border-slate-600">

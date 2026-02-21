@@ -10,12 +10,14 @@ import {
 
 const API_BASE = "http://localhost:5193/api/PGTAIL";
 
-type DefensePosture = "ZeroTrust" | "CommunityTrust" | "Custom";
+type DefensePosture = "ZeroTrust" | "CommunityTrust" | "Custom" | "Institutional" | "TimeSentry";
 
 const POSTURES: { id: DefensePosture; profileId: number; title: string; description: string }[] = [
   { id: "ZeroTrust", profileId: 0, title: "Zero-Trust", description: "Maximum security. Every transaction requires MFA. No exceptions." },
   { id: "CommunityTrust", profileId: 1, title: "Community-Trust", description: "Balanced security. Auto-approves low-risk transactions to known entities." },
   { id: "Custom", profileId: 2, title: "Custom", description: "Sovereign control. Manually define all thresholds." },
+  { id: "Institutional", profileId: 3, title: "Institutional", description: "Relaxed for high-volume. Cap=$100K, Risk≤50, Confidence≥60%." },
+  { id: "TimeSentry", profileId: 4, title: "Time-Sentry", description: "Ghost Hours Policy: 90% cap reduction after 8 PM UTC." },
 ];
 
 type SettingsState = Record<string, number>;
@@ -48,6 +50,8 @@ export default function SovereignConfigurator({
     dust: true,
     peeling: true,
   });
+  /** B1: Amount (USD) above which hardware wallet is required. Null/0 = no requirement. Custom posture only. */
+  const [hardwareWalletRequiredAbove, setHardwareWalletRequiredAbove] = useState<number | null>(null);
 
   useEffect(() => setAddress(targetAddress), [targetAddress]);
 
@@ -69,9 +73,19 @@ export default function SovereignConfigurator({
           if (profile === 0) {
             setSelectedPosture("ZeroTrust");
             setSettings(getInitialSettings("ZeroTrust"));
+            setHardwareWalletRequiredAbove(null);
           } else if (profile === 1) {
             setSelectedPosture("CommunityTrust");
             setSettings(getInitialSettings("CommunityTrust"));
+            setHardwareWalletRequiredAbove(null);
+          } else if (profile === 3) {
+            setSelectedPosture("Institutional");
+            setSettings(getInitialSettings("Institutional"));
+            setHardwareWalletRequiredAbove(null);
+          } else if (profile === 4) {
+            setSelectedPosture("TimeSentry");
+            setSettings(getInitialSettings("TimeSentry"));
+            setHardwareWalletRequiredAbove(null);
           } else {
             setSelectedPosture("Custom");
             let overrides: Record<string, number> = {};
@@ -86,10 +100,12 @@ export default function SovereignConfigurator({
               merged[s.key] = overrides[s.key] ?? Number(entry[s.key]) ?? preset[s.key] ?? 0;
             }
             setSettings(merged);
+            setHardwareWalletRequiredAbove(entry.hardwareWalletRequiredAbove != null ? Number(entry.hardwareWalletRequiredAbove) : null);
           }
         } else {
           setSelectedPosture("ZeroTrust");
           setSettings(getInitialSettings("ZeroTrust"));
+          setHardwareWalletRequiredAbove(null);
         }
       } catch {
         setSelectedPosture("ZeroTrust");
@@ -133,6 +149,9 @@ export default function SovereignConfigurator({
         body.blockThreshold = settings.blockThreshold;
         body.minConfidenceCeiling = settings.minConfidenceCeiling;
         body.policyOverrides = settings;
+        if (hardwareWalletRequiredAbove != null && hardwareWalletRequiredAbove > 0) {
+          body.hardwareWalletRequiredAbove = hardwareWalletRequiredAbove;
+        }
       }
 
       const res = await fetch(
@@ -155,9 +174,10 @@ export default function SovereignConfigurator({
   const handlePostureClick = (p: (typeof POSTURES)[0]) => {
     const preset = p.id === "Custom"
       ? (selectedPosture === "ZeroTrust" ? PRESET_VALUES.ZeroTrust : PRESET_VALUES.CommunityTrust)
-      : PRESET_VALUES[p.id] ?? PRESET_VALUES.ZeroTrust;
+      : (PRESET_VALUES[p.id] ?? PRESET_VALUES.ZeroTrust);
     setSelectedPosture(p.id);
     setSettings({ ...getInitialSettings(p.id), ...preset });
+    if (p.id !== "Custom") setHardwareWalletRequiredAbove(null);
   };
 
   const setSetting = (key: string, value: number) => {
@@ -223,7 +243,7 @@ export default function SovereignConfigurator({
 
       <div>
         <p className="text-sm font-bold text-slate-400 mb-3">Defense Posture</p>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           {POSTURES.map((p) => (
             <button
               key={p.id}
@@ -243,9 +263,9 @@ export default function SovereignConfigurator({
       <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50 space-y-4">
         <p className="text-sm font-bold text-slate-400">
           {selectedPosture === "Custom" ? "Custom Thresholds" : "Current Settings"}
-          {(selectedPosture === "ZeroTrust" || selectedPosture === "CommunityTrust") && (
+          {selectedPosture !== "Custom" && (
             <span className="ml-2 text-xs font-normal text-slate-500">
-              (from {selectedPosture === "ZeroTrust" ? "Zero-Trust" : "Community-Trust"} preset)
+              (from {selectedPosture} preset)
             </span>
           )}
         </p>
@@ -262,6 +282,32 @@ export default function SovereignConfigurator({
             {expandedSections[group.key] && (
               <div className="px-4 py-2 space-y-0">
                 {group.settings.map((s) => renderSettingRow(s, selectedPosture !== "Custom"))}
+                {group.key === "trustRange" && selectedPosture === "Custom" && (
+                  <div className="flex items-center justify-between gap-4 py-2 border-b border-slate-700/50 last:border-0">
+                    <div className="flex items-center min-w-0">
+                      <span className="text-slate-300 text-sm">Hardware Wallet Required Above (B1)</span>
+                      <InfoTooltip
+                        title="Hardware Wallet Required Above"
+                        description="Amount (USD) above which a hardware wallet is required. Transactions above this threshold require IsHardwareWallet=true or MFA. 0 or empty = no requirement."
+                        zeroTrust="Not used in Zero Trust (all tx require MFA)."
+                        communityTrust="Optional; e.g. $10,000 for high-value tx."
+                        whereUsed="B1: CheckRisk blocks when amount exceeds threshold and IsHardwareWallet=false."
+                      />
+                    </div>
+                    <input
+                      type="number"
+                      min={0}
+                      max={10_000_000}
+                      value={hardwareWalletRequiredAbove ?? ""}
+                      placeholder="None"
+                      onChange={(e) => {
+                        const v = e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0);
+                        setHardwareWalletRequiredAbove(v);
+                      }}
+                      className="w-24 bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm border border-slate-600"
+                    />
+                  </div>
+                )}
               </div>
             )}
           </div>

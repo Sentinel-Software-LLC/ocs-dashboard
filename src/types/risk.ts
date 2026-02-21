@@ -37,6 +37,12 @@ export interface ForensicDetails {
   trustRangeVerdict?: string;
   trustRangeReason?: string;
   trustProfile?: string;
+  /** N2: Wash-sale warning when present */
+  washSaleWarning?: string;
+  /** N3: Chain decentralization status */
+  decentralizationStatus?: string;
+  /** K3: ENS/UNS suspicious resolution warning */
+  ensSuspiciousWarning?: string;
 }
 
 /** Trust profile enum (matches C# TrustProfile) */
