@@ -1,8 +1,11 @@
 "use client"
 import { useState, useEffect } from 'react';
+import { getApiHeaders } from '@/lib/api';
 import type { RiskLog, ForensicDetails } from '@/types/risk';
 import { TRUST_PROFILES } from '@/types/risk';
 import SovereignConfigurator from '@/components/SovereignConfigurator';
+import { MVP1_SCENARIOS, statusToOutcome, matchLogToScenario, type Mvp1Scenario, type ScenarioOutcome } from '@/types/mvp1Scenarios';
+import { MVP2_SCENARIOS, statusToOutcomeMvp2, matchLogToScenarioMvp2, type Mvp2Scenario } from '@/types/mvp2Scenarios';
 
 function parseForensicDetails(detailsJson: string): ForensicDetails | null {
   try {
@@ -76,26 +79,29 @@ interface RegistryEntry {
   notes: string;
 }
 
-const API_BASE = 'http://localhost:5193/api/PGTAIL';
+const ENGINE_BASE = process.env.NEXT_PUBLIC_ENGINE_URL || 'http://localhost:8080';
+const API_BASE = `${ENGINE_BASE}/api/PGTAIL`;
+const DIAGNOSTICS_BASE = `${ENGINE_BASE}/api/diagnostics`;
 
 export default function Home() {
   const [logs, setLogs] = useState<RiskLog[]>([]);
   const [forensicLog, setForensicLog] = useState<RiskLog | null>(null);
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
-  const [activeTab, setActiveTab] = useState<'traffic' | 'registry' | 'policy' | 'audit'>('traffic');
+  const [activeTab, setActiveTab] = useState<'traffic' | 'registry' | 'policy' | 'audit' | 'compliance' | 'mvp'>('traffic');
+  const [selectedMvp, setSelectedMvp] = useState<1 | 2 | null>(null);
   const [configuratorAddress, setConfiguratorAddress] = useState('');
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const fetchLogs = async () => {
     setConnectionError(null);
     try {
-      const res = await fetch(`${API_BASE}/logs`);
+      const res = await fetch(`${API_BASE}/logs`, { headers: await getApiHeaders() });
       if (!res.ok) throw new Error(`Engine returned ${res.status}`);
       const data = await res.json();
       setLogs(Array.isArray(data) ? data : []);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
-      setConnectionError(`Cannot connect to Engine (localhost:5193). Is PGTAIL.Engine running? ${msg}`);
+      setConnectionError(`Cannot connect to Engine (${ENGINE_BASE}). Is PGTAIL.Engine running? ${msg}`);
       setLogs([]);
       console.error("Engine Connection Error:", err);
     }
@@ -112,7 +118,7 @@ export default function Home() {
   const handleWhitelist = async (targetAddress: string, userAddress: string) => {
     const response = await fetch(`${API_BASE}/whitelist`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...await getApiHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ address: targetAddress, userAddress })
     });
     if (response.ok) await fetchLogs();
@@ -120,7 +126,7 @@ export default function Home() {
 
   const fetchRegistry = async () => {
     try {
-      const res = await fetch(`${API_BASE}/registry`);
+      const res = await fetch(`${API_BASE}/registry`, { headers: await getApiHeaders() });
       const data = await res.json();
       setRegistry(data);
     } catch (err) {
@@ -128,51 +134,67 @@ export default function Home() {
     }
   };
 
+  const clearTrafficLogs = async () => {
+    try {
+      let res = await fetch(`${API_BASE}/logs`, { method: 'DELETE', headers: await getApiHeaders() });
+      if (res.status === 405) {
+        res = await fetch(`${API_BASE}/logs/clear`, { method: 'POST', headers: await getApiHeaders() });
+      }
+      if (res.ok) {
+        setLogs([]);
+        setTrafficResults(null);
+        setTrafficResultsMvp2(null);
+        await fetchLogs();
+      } else {
+        setConnectionError(`Clear failed (${res.status}). Engine at ${ENGINE_BASE} may need rebuild.`);
+      }
+    } catch (err) {
+      setConnectionError(`Clear failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  };
+
   const handleUpdateProfile = async (address: string, trustProfile: number) => {
     const response = await fetch(`${API_BASE}/registry/${encodeURIComponent(address)}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...await getApiHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ trustProfile })
     });
     if (response.ok) await fetchRegistry();
   };
 
   const [generating, setGenerating] = useState(false);
+  const [generatingMvp2, setGeneratingMvp2] = useState(false);
   const [incidentSwitchEnabled, setIncidentSwitchEnabled] = useState(false);
   const [incidentSwitchLoading, setIncidentSwitchLoading] = useState(false);
+  const [trafficResults, setTrafficResults] = useState<{ scenario: Mvp1Scenario; actual: ScenarioOutcome; pass: boolean }[] | null>(null);
+  const [trafficResultsMvp2, setTrafficResultsMvp2] = useState<{ scenario: Mvp2Scenario; actual: ScenarioOutcome; pass: boolean }[] | null>(null);
+
   const generateTraffic = async () => {
     setGenerating(true);
     setConnectionError(null);
+    setTrafficResults(null);
     const baseUrl = `${API_BASE}/check-risk`;
-    // Scenarios exercise each Policy Configurator setting and Engine feature. Update when adding new PI features.
-    const scenarios: { label: string; body: Record<string, unknown> }[] = [
-      { label: 'Sovereign Cap OK', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '5' } },
-      { label: 'Sovereign Cap breach (MFA)', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '5000' } },
-      { label: 'B1 HW wallet (above threshold, no HW)', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '5000', IsHardwareWallet: false } },
-      { label: 'Blacklist block', body: { FromAddress: 'test_peeling_chain', ToAddress: 'rff5UDgUy9NvcpDNWUqw4jwFMoXWu855Nt', Amount: '1' } },
-      { label: 'Registry miss', body: { FromAddress: '0xUnknown_New_User', ToAddress: 'test_mature_wallet', Amount: '10' } },
-      { label: 'I2 Slippage exceed (block)', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '100', TransactionType: 'dex_swap', MaxSlippagePercent: 1, SlippagePercent: 2.5 } },
-      { label: 'J1 Bridge chain mismatch (block)', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '100', TransactionType: 'bridge', BridgeChainId: 1, ExpectedChainId: 137 } },
-      { label: 'J2 Bridge MFA', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '500', TransactionType: 'bridge' } },
-      { label: 'I1 DEX swap (RecommendPrivateMempool)', body: { FromAddress: 'test_trusted_partner', ToAddress: 'test_mature_wallet', Amount: '50', TransactionType: 'dex_swap' } },
-    ];
     try {
-      const results: string[] = [];
-      for (const { label, body } of scenarios) {
+      const results: { scenario: Mvp1Scenario; actual: ScenarioOutcome; pass: boolean }[] = [];
+      for (const s of MVP1_SCENARIOS) {
+        const body: Record<string, unknown> = {
+          FromAddress: s.from,
+          ToAddress: s.to,
+          Amount: s.amount,
+          ...s.params,
+        };
         const r = await fetch(baseUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
+          headers: { ...await getApiHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
         });
-        const data = await r.json().catch(() => ({}));
-        if (r.status === 200) results.push(`${label}: OK`);
-        else if (r.status === 202) results.push(`${label}: MFA — ${data.RiskAdvice || 'required'}`);
-        else if (r.status === 403) results.push(`${label}: BLOCKED — ${data.Description || data.RiskAdvice || 'blocked'}`);
-        else results.push(`${label}: ${r.status}`);
+        const actual = statusToOutcome(r.status);
+        const pass = actual === s.expected;
+        results.push({ scenario: s, actual, pass });
       }
+      setTrafficResults(results);
       await fetchLogs();
       setConnectionError(null);
-      console.info('Generate Traffic:', results);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       setConnectionError(`Traffic generation failed. Is PGTAIL.Engine running? ${msg}`);
@@ -182,9 +204,44 @@ export default function Home() {
     }
   };
 
+  const generateTrafficMvp2 = async () => {
+    setGeneratingMvp2(true);
+    setConnectionError(null);
+    setTrafficResultsMvp2(null);
+    const baseUrl = `${API_BASE}/check-risk`;
+    try {
+      const results: { scenario: Mvp2Scenario; actual: ScenarioOutcome; pass: boolean }[] = [];
+      for (const s of MVP2_SCENARIOS) {
+        const body: Record<string, unknown> = {
+          FromAddress: s.from,
+          ToAddress: s.to,
+          Amount: s.amount,
+          ...s.params,
+        };
+        const r = await fetch(baseUrl, {
+          method: 'POST',
+          headers: { ...await getApiHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const actual = statusToOutcomeMvp2(r.status);
+        const pass = actual === s.expected;
+        results.push({ scenario: s, actual, pass });
+      }
+      setTrafficResultsMvp2(results);
+      await fetchLogs();
+      setConnectionError(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      setConnectionError(`MVP-2 traffic generation failed. Is PGTAIL.Engine running? ${msg}`);
+      console.error('MVP-2 traffic generation failed:', err);
+    } finally {
+      setGeneratingMvp2(false);
+    }
+  };
+
   const fetchIncidentSwitch = async () => {
     try {
-      const res = await fetch(`${API_BASE}/incident-switch`);
+      const res = await fetch(`${API_BASE}/incident-switch`, { headers: await getApiHeaders() });
       if (res.ok) {
         const data = await res.json();
         setIncidentSwitchEnabled(data.enabled === true);
@@ -197,7 +254,7 @@ export default function Home() {
     try {
       const res = await fetch(`${API_BASE}/incident-switch`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...await getApiHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: !incidentSwitchEnabled })
       });
       if (res.ok) {
@@ -220,7 +277,7 @@ export default function Home() {
   }, [activeTab]);
 
   return (
-    <main className="p-8 bg-slate-900 min-h-screen text-white font-sans">
+    <main className="p-8 pb-12 bg-slate-900 min-h-screen text-white font-sans">
       {incidentSwitchEnabled && (
         <div className="mb-4 p-4 bg-amber-900/50 border border-amber-600 rounded-lg flex items-center justify-between">
           <span className="font-bold text-amber-400">E5 Incident Switch: ENABLED — Only whitelisted recipients allowed</span>
@@ -261,6 +318,12 @@ export default function Home() {
             Audit & Export
           </button>
           <button
+            onClick={() => setActiveTab('compliance')}
+            className={`px-4 py-2 rounded font-bold ${activeTab === 'compliance' ? 'bg-red-600' : 'bg-slate-600 hover:bg-slate-500'}`}
+          >
+            Compliance (PI.06)
+          </button>
+          <button
             onClick={toggleIncidentSwitch}
             disabled={incidentSwitchLoading}
             className={`px-4 py-2 rounded font-bold transition-all ${incidentSwitchEnabled ? 'bg-amber-600 hover:bg-amber-500' : 'bg-slate-600 hover:bg-slate-500'}`}
@@ -269,17 +332,18 @@ export default function Home() {
             {incidentSwitchLoading ? '…' : (incidentSwitchEnabled ? '🛡️ Incident ON' : 'Incident Switch')}
           </button>
           <button
-            onClick={activeTab === 'traffic' ? fetchLogs : activeTab === 'registry' ? fetchRegistry : activeTab === 'audit' ? () => {} : () => {}}
-            className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded font-bold transition-all shadow-lg active:scale-95"
+            onClick={activeTab === 'registry' ? fetchRegistry : clearTrafficLogs}
+            className={activeTab === 'registry' ? 'bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded font-bold transition-all shadow-lg active:scale-95' : 'bg-slate-600 hover:bg-slate-500 px-4 py-2 rounded font-bold transition-all shadow-lg active:scale-95'}
+            title={activeTab === 'registry' ? 'Refresh registry' : 'Clear traffic logs (DB + UI)'}
           >
-            🔄 Refresh
+            {activeTab === 'registry' ? '🔄 Refresh' : 'Clear Results'}
           </button>
           <button
-            onClick={generateTraffic}
-            disabled={generating}
-            className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-600 disabled:cursor-not-allowed px-4 py-2 rounded font-bold transition-all shadow-lg active:scale-95"
+            onClick={() => setActiveTab('mvp')}
+            className={`px-4 py-2 rounded font-bold transition-all shadow-lg active:scale-95 ${activeTab === 'mvp' ? 'bg-red-600' : 'bg-emerald-600 hover:bg-emerald-500'}`}
+            title="Run MVP-1 or MVP-2 demo scenarios"
           >
-            {generating ? '⏳ Generating…' : '▶ Generate Traffic'}
+            ▶ Run MVP
           </button>
         </div>
       </div>
@@ -361,7 +425,7 @@ export default function Home() {
             <button
               onClick={async () => {
                 try {
-                  const res = await fetch(`${API_BASE}/audit/export?format=csv`);
+                  const res = await fetch(`${API_BASE}/audit/export?format=csv`, { headers: await getApiHeaders() });
                   if (!res.ok) throw new Error(`Export failed: ${res.status}`);
                   const blob = await res.blob();
                   const url = URL.createObjectURL(blob);
@@ -381,7 +445,7 @@ export default function Home() {
             <button
               onClick={async () => {
                 try {
-                  const res = await fetch(`${API_BASE}/audit/export/signed`);
+                  const res = await fetch(`${API_BASE}/audit/export/signed`, { headers: await getApiHeaders() });
                   if (!res.ok) throw new Error(`Export failed: ${res.status}`);
                   const blob = await res.blob();
                   const url = URL.createObjectURL(blob);
@@ -402,6 +466,171 @@ export default function Home() {
         </div>
       )}
 
+      {activeTab === 'compliance' && (
+        <ComplianceTab diagnosticsBase={DIAGNOSTICS_BASE} getApiHeaders={getApiHeaders} />
+      )}
+
+      {activeTab === 'mvp' && (
+        <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
+          <h2 className="text-xl mb-4 text-slate-300 underline underline-offset-8">MVP Demo</h2>
+          {!selectedMvp ? (
+            <div className="space-y-4">
+              <p className="text-slate-400">Choose which MVP to run. Each has its own prerequisites and scenarios.</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <button
+                  onClick={() => setSelectedMvp(1)}
+                  className="p-6 rounded-lg border-2 border-slate-600 bg-slate-900/50 hover:border-emerald-500 hover:bg-emerald-900/20 text-left transition-all"
+                >
+                  <p className="font-bold text-xl text-emerald-400 mb-2">MVP-1</p>
+                  <p className="text-sm text-slate-400 mb-2">The Sovereign Foundation</p>
+                  <p className="text-xs text-slate-500">6 scenarios: C7, B2, E6, E7, E4</p>
+                  <p className="text-xs text-slate-500 mt-1">Prerequisite: Policy Configurator → Trusted Partner → Custom → Sovereign Cap $1000 → Deploy</p>
+                </button>
+                <button
+                  onClick={() => setSelectedMvp(2)}
+                  className="p-6 rounded-lg border-2 border-slate-600 bg-slate-900/50 hover:border-amber-500 hover:bg-amber-900/20 text-left transition-all"
+                >
+                  <p className="font-bold text-xl text-amber-400 mb-2">MVP-2</p>
+                  <p className="text-sm text-slate-400 mb-2">Enterprise Guard</p>
+                  <p className="text-xs text-slate-500">7 scenarios: H1, H2, H3, J1, K1, I2, B1</p>
+                  <p className="text-xs text-slate-500 mt-1">Prerequisite: Policy Configurator → Trusted Partner → Institutional → Custom → Hardware Wallet Required Above = 1000 → Deploy</p>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => { setSelectedMvp(null); setTrafficResults(null); setTrafficResultsMvp2(null); }}
+                  className="text-slate-400 hover:text-white text-sm font-bold"
+                >
+                  ← Choose different MVP
+                </button>
+              </div>
+              {selectedMvp === 1 && (
+                <>
+                  <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+                    <p className="text-sm font-bold text-slate-300 mb-2">MVP-1 Prerequisites</p>
+                    <ul className="text-xs text-slate-400 list-disc list-inside space-y-1">
+                      <li>Engine running (Docker on 8080 or dotnet run)</li>
+                      <li>Database seeded (POST /api/diagnostics/seed)</li>
+                      <li>Policy Configurator: Trusted Partner → Custom → Sovereign Cap $1000 → Deploy</li>
+                    </ul>
+                    <div className="flex gap-4 mt-4">
+                      <button
+                        onClick={async () => {
+                          try {
+                            await fetch(`${DIAGNOSTICS_BASE}/seed`, { method: 'POST', headers: await getApiHeaders() });
+                          } catch (e) {
+                            setConnectionError(e instanceof Error ? e.message : 'Seed failed');
+                          }
+                        }}
+                        className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded font-bold text-sm"
+                      >
+                        Seed Database
+                      </button>
+                      <button
+                        onClick={generateTraffic}
+                        disabled={generating}
+                        className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-600 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm"
+                      >
+                        {generating ? '⏳ Running…' : '▶ Run MVP-1'}
+                      </button>
+                    </div>
+                  </div>
+                  {trafficResults && (
+                    <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+                      <h3 className="text-sm font-bold text-slate-400 mb-3">MVP-1 Results — {trafficResults.filter((r) => r.pass).length}/{trafficResults.length} passed</h3>
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="border-b border-slate-600 text-slate-500">
+                            <th className="p-2">Feature</th>
+                            <th className="p-2">Scenario</th>
+                            <th className="p-2">Expected</th>
+                            <th className="p-2">Actual</th>
+                            <th className="p-2">Pass</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {trafficResults.map((r, i) => (
+                            <tr key={i} className={`border-b border-slate-700/50 ${r.pass ? '' : 'bg-red-900/20'}`}>
+                              <td className="p-2 font-mono text-slate-300">{r.scenario.featureId}</td>
+                              <td className="p-2 text-slate-300">{r.scenario.label}</td>
+                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.scenario.expected === 'APPROVED' ? 'bg-green-900/50' : r.scenario.expected === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{r.scenario.expected}</span></td>
+                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.actual === 'APPROVED' ? 'bg-green-900/50' : r.actual === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{r.actual}</span></td>
+                              <td className="p-2 font-bold">{r.pass ? '✓' : '✗'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
+              {selectedMvp === 2 && (
+                <>
+                  <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+                    <p className="text-sm font-bold text-slate-300 mb-2">MVP-2 Prerequisites</p>
+                    <ul className="text-xs text-slate-400 list-disc list-inside space-y-1">
+                      <li>MVP-1 prerequisites</li>
+                      <li>Policy Configurator: Trusted Partner → Institutional → Custom → Hardware Wallet Required Above = 1000 → Deploy</li>
+                    </ul>
+                    <div className="flex gap-4 mt-4">
+                      <button
+                        onClick={async () => {
+                          try {
+                            await fetch(`${DIAGNOSTICS_BASE}/seed`, { method: 'POST', headers: await getApiHeaders() });
+                          } catch (e) {
+                            setConnectionError(e instanceof Error ? e.message : 'Seed failed');
+                          }
+                        }}
+                        className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded font-bold text-sm"
+                      >
+                        Seed Database
+                      </button>
+                      <button
+                        onClick={generateTrafficMvp2}
+                        disabled={generatingMvp2}
+                        className="bg-amber-600 hover:bg-amber-500 disabled:bg-slate-600 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm"
+                      >
+                        {generatingMvp2 ? '⏳ Running…' : '▶ Run MVP-2'}
+                      </button>
+                    </div>
+                  </div>
+                  {trafficResultsMvp2 && (
+                    <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+                      <h3 className="text-sm font-bold text-slate-400 mb-3">MVP-2 Results — {trafficResultsMvp2.filter((r) => r.pass).length}/{trafficResultsMvp2.length} passed</h3>
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="border-b border-slate-600 text-slate-500">
+                            <th className="p-2">Feature</th>
+                            <th className="p-2">Scenario</th>
+                            <th className="p-2">Expected</th>
+                            <th className="p-2">Actual</th>
+                            <th className="p-2">Pass</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {trafficResultsMvp2.map((r, i) => (
+                            <tr key={i} className={`border-b border-slate-700/50 ${r.pass ? '' : 'bg-red-900/20'}`}>
+                              <td className="p-2 font-mono text-slate-300">{r.scenario.featureId}</td>
+                              <td className="p-2 text-slate-300">{r.scenario.label}</td>
+                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.scenario.expected === 'APPROVED' ? 'bg-green-900/50' : r.scenario.expected === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{r.scenario.expected}</span></td>
+                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.actual === 'APPROVED' ? 'bg-green-900/50' : r.actual === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{r.actual}</span></td>
+                              <td className="p-2 font-bold">{r.pass ? '✓' : '✗'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {connectionError && (
         <div className="mb-4 p-4 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">
           <strong>Connection Error:</strong> {connectionError}
@@ -411,6 +640,92 @@ export default function Home() {
 
       {activeTab === 'traffic' && <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
         <h2 className="text-xl mb-4 text-slate-300 underline underline-offset-8">Live Traffic Monitor</h2>
+        <p className="text-sm text-slate-500 mb-4">
+          MVP-1: 6 scenarios (C7, B2, E6, E7, E4). MVP-2: 7 scenarios (H1, H2, H3, J1, K1, I2, B1). Results tie feature → expected → actual → pass/fail.
+          <span className="block mt-1 text-xs">Feature column maps each log row to the scenario that produced it. B1: set HardwareWalletRequiredAbove=1000 on Trusted Partner via Custom posture first.</span>
+        </p>
+        {trafficResults && (
+          <div className="mb-6 p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+            <h3 className="text-sm font-bold text-slate-400 mb-3">MVP-1 Scenario Results — Settings → Tests → Outcomes</h3>
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-600 text-slate-500">
+                  <th className="p-2">Feature</th>
+                  <th className="p-2">Scenario</th>
+                  <th className="p-2">Expected</th>
+                  <th className="p-2">Actual</th>
+                  <th className="p-2">Pass</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trafficResults.map((r, i) => (
+                  <tr key={i} className={`border-b border-slate-700/50 ${r.pass ? '' : 'bg-red-900/20'}`}>
+                    <td className="p-2 font-mono text-slate-300">{r.scenario.featureId}</td>
+                    <td className="p-2 text-slate-300">{r.scenario.label}</td>
+                    <td className="p-2">
+                      <span className={`px-1.5 py-0.5 rounded text-xs ${
+                        r.scenario.expected === 'APPROVED' ? 'bg-green-900/50' :
+                        r.scenario.expected === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'
+                      }`}>{r.scenario.expected}</span>
+                    </td>
+                    <td className="p-2">
+                      <span className={`px-1.5 py-0.5 rounded text-xs ${
+                        r.actual === 'APPROVED' ? 'bg-green-900/50' :
+                        r.actual === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'
+                      }`}>{r.actual}</span>
+                    </td>
+                    <td className="p-2 font-bold">{r.pass ? '✓' : '✗'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-xs text-slate-500 mt-2">
+              {trafficResults.filter((r) => r.pass).length}/{trafficResults.length} passed.
+              {trafficResults.some((r) => !r.pass) && ' Failures may be due to Policy Configurator settings (e.g. sovereignCap=0 breaks C7 Cap OK).'}
+            </p>
+          </div>
+        )}
+        {trafficResultsMvp2 && (
+          <div className="mb-6 p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+            <h3 className="text-sm font-bold text-slate-400 mb-3">MVP-2 Scenario Results — H1, H2, H3, J1, K1, I2, B1</h3>
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-600 text-slate-500">
+                  <th className="p-2">Feature</th>
+                  <th className="p-2">Scenario</th>
+                  <th className="p-2">Expected</th>
+                  <th className="p-2">Actual</th>
+                  <th className="p-2">Pass</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trafficResultsMvp2.map((r, i) => (
+                  <tr key={i} className={`border-b border-slate-700/50 ${r.pass ? '' : 'bg-red-900/20'}`}>
+                    <td className="p-2 font-mono text-slate-300">{r.scenario.featureId}</td>
+                    <td className="p-2 text-slate-300">{r.scenario.label}</td>
+                    <td className="p-2">
+                      <span className={`px-1.5 py-0.5 rounded text-xs ${
+                        r.scenario.expected === 'APPROVED' ? 'bg-green-900/50' :
+                        r.scenario.expected === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'
+                      }`}>{r.scenario.expected}</span>
+                    </td>
+                    <td className="p-2">
+                      <span className={`px-1.5 py-0.5 rounded text-xs ${
+                        r.actual === 'APPROVED' ? 'bg-green-900/50' :
+                        r.actual === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'
+                      }`}>{r.actual}</span>
+                    </td>
+                    <td className="p-2 font-bold">{r.pass ? '✓' : '✗'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-xs text-slate-500 mt-2">
+              {trafficResultsMvp2.filter((r) => r.pass).length}/{trafficResultsMvp2.length} passed.
+              {trafficResultsMvp2.some((r) => !r.pass) && ' B1 requires HardwareWalletRequiredAbove on Trusted Partner.'}
+            </p>
+          </div>
+        )}
         {logs.some((l) => getStatus(l) === 'MFA_REQUIRED') && (
           <div className="mb-4 p-4 bg-amber-900/30 border border-amber-600/50 rounded-lg flex items-center gap-3">
             <span className="text-2xl">⚠️</span>
@@ -426,6 +741,7 @@ export default function Home() {
           <thead>
             <tr className="border-b border-slate-600 text-slate-400">
               <th className="p-3 text-sm uppercase tracking-wider">Timestamp</th>
+              <th className="p-3 text-sm uppercase tracking-wider" title="Feature that produced this log (MVP-1: C7, B2, E6, E7, E4; MVP-2: H1–H3, J1, K1, I2, B1)">Feature</th>
               <th className="p-3 text-sm uppercase tracking-wider">Target Address / Alert</th>
               <th className="p-3 text-sm uppercase tracking-wider">Risk Score</th>
               <th className="p-3 text-sm uppercase tracking-wider">Status</th>
@@ -434,12 +750,18 @@ export default function Home() {
           </thead>
           <tbody>
             {logs.length === 0 ? (
-              <tr><td colSpan={5} className="p-8 text-center text-slate-500 italic">No traffic detected. Standby...</td></tr>
+              <tr><td colSpan={6} className="p-8 text-center text-slate-500 italic">No traffic detected. Standby...</td></tr>
             ) : (
               logs.map((log, i) => {
                 const status = getStatus(log);
                 const overridden = isAlreadyOverridden(log.destinationAddress, log.sourceAddress);
                 const isManualOverride = log.classification === 'Whitelist';
+                const details = parseForensicDetails(log.detailsJson ?? '');
+                const amount = details?.decisionMatrix?.currentAmount;
+                const reason = details?.trustRangeReason || log.reason || '';
+                const scenarioMvp2 = matchLogToScenarioMvp2(log.sourceAddress, log.destinationAddress, amount, reason);
+                const scenarioMvp1 = matchLogToScenario(log.sourceAddress, log.destinationAddress, amount);
+                const scenario = scenarioMvp2 ?? scenarioMvp1;
 
                 const rowBg = status === 'BLOCKED' ? 'bg-red-900/20' :
                   status === 'MFA_REQUIRED' ? 'bg-amber-900/20' :
@@ -448,6 +770,15 @@ export default function Home() {
                 return (
                   <tr key={i} className={`border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors ${rowBg}`}>
                     <td className="p-3 text-xs text-slate-500 font-mono">{formatTime(log.timestamp)}</td>
+                    <td className="p-3">
+                      {scenario ? (
+                        <span className="text-xs font-mono font-bold text-slate-300" title={scenario.label}>
+                          {scenario.featureId}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-600">—</span>
+                      )}
+                    </td>
                     <td className="p-3">
                       <div className="font-mono text-xs text-slate-200">{log.destinationAddress}</div>
                       <div className={`text-[10px] italic mt-1 font-bold ${isManualOverride ? 'text-blue-400' : (log.riskScore > 50 ? 'text-yellow-500' : 'text-slate-400')}`}>
@@ -520,7 +851,7 @@ function CheckRiskForm({ apiBase, onSuccess }: { apiBase: string; onSuccess: () 
 
       const r = await fetch(`${apiBase}/check-risk`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...(await getApiHeaders()), 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       if (r.status === 200) {
@@ -689,6 +1020,105 @@ function CheckRow({ label, value, ok }: { label: string; value: string; ok: bool
       <div className="flex items-center gap-2">
         <span className="text-slate-400 text-xs font-mono">{value}</span>
         <span className={`w-3 h-3 rounded-full ${ok ? 'bg-green-500' : 'bg-red-500'}`} title={ok ? 'Pass' : 'Fail'} />
+      </div>
+    </div>
+  );
+}
+
+/** PI.06 Sprint 4: F4, E2, M2, H5, G4 — Compliance & Horizon diagnostics */
+function ComplianceTab({ diagnosticsBase, getApiHeaders }: { diagnosticsBase: string; getApiHeaders: () => Promise<Record<string, string>> }) {
+  const [f4, setF4] = useState<Record<string, unknown> | null>(null);
+  const [e2, setE2] = useState<Record<string, unknown> | null>(null);
+  const [h5, setH5] = useState<Record<string, unknown> | null>(null);
+  const [g4, setG4] = useState<Record<string, unknown> | null>(null);
+  const [m2Status, setM2Status] = useState<string>('—');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const h = await getApiHeaders();
+        const [rF4, rE2, rH5, rG4] = await Promise.all([
+          fetch(`${diagnosticsBase}/comms-templates`, { headers: h }),
+          fetch(`${diagnosticsBase}/geofencing`, { headers: h }),
+          fetch(`${diagnosticsBase}/eip7702-policy`, { headers: h }),
+          fetch(`${diagnosticsBase}/playbooks`, { headers: h }),
+        ]);
+        if (!cancelled) {
+          setF4(rF4.ok ? await rF4.json() : null);
+          setE2(rE2.ok ? await rE2.json() : null);
+          setH5(rH5.ok ? await rH5.json() : null);
+          setG4(rG4.ok ? await rG4.json() : null);
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to fetch');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [diagnosticsBase, getApiHeaders]);
+
+  const testM2 = async () => {
+    try {
+      const h = await getApiHeaders();
+      const r = await fetch(`${diagnosticsBase}/recovery-attestation`, {
+        method: 'POST',
+        headers: { ...h, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attestationPayload: 'test-stub', deviceId: 'dashboard-test' }),
+      });
+      const data = r.ok ? await r.json() : null;
+      setM2Status(data?.valid ? 'Accepted' : `HTTP ${r.status}`);
+    } catch (e) {
+      setM2Status(e instanceof Error ? e.message : 'Error');
+    }
+  };
+
+  if (loading) return <div className="bg-slate-800 p-6 rounded-lg border border-slate-700"><p className="text-slate-400">Loading compliance policies…</p></div>;
+  if (error) return <div className="bg-slate-800 p-6 rounded-lg border border-slate-700"><p className="text-red-400">Error: {error}</p></div>;
+
+  return (
+    <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
+      <h2 className="text-xl mb-4 text-slate-300 underline underline-offset-8">Compliance & Horizon (PI.06 Sprint 4)</h2>
+      <p className="text-slate-400 text-sm mb-6">Engine diagnostics for F4, E2, M2, H5, G4.</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+          <h3 className="font-bold text-slate-200 mb-2">F4 — Customer Comms Templates</h3>
+          {f4?.templates && Array.isArray(f4.templates) ? (
+            <ul className="text-xs text-slate-400 space-y-1">
+              {(f4.templates as { id?: string; subject?: string }[]).map((t, i) => (
+                <li key={i}>{t.id}: {t.subject}</li>
+              ))}
+            </ul>
+          ) : <p className="text-slate-500 text-sm">—</p>}
+        </div>
+        <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+          <h3 className="font-bold text-slate-200 mb-2">E2 — Geo/IP Geofencing</h3>
+          <p className="text-sm text-slate-400">Travel mode: {e2?.travelModeEnabled ? 'Enabled' : '—'}</p>
+        </div>
+        <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+          <h3 className="font-bold text-slate-200 mb-2">M2 — Recovery Phrase Attestation</h3>
+          <p className="text-sm text-slate-400 mb-2">Status: {m2Status}</p>
+          <button onClick={testM2} className="text-xs bg-slate-600 hover:bg-slate-500 px-2 py-1 rounded">Test attestation</button>
+        </div>
+        <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+          <h3 className="font-bold text-slate-200 mb-2">H5 — EIP-7702 Abuse Detection</h3>
+          <p className="text-sm text-slate-400">Block unverified: {h5?.blockUnverifiedDelegation ? 'Yes' : '—'}</p>
+        </div>
+        <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50 md:col-span-2">
+          <h3 className="font-bold text-slate-200 mb-2">G4 — Incident Playbooks</h3>
+          {g4?.playbooks && Array.isArray(g4.playbooks) ? (
+            <ul className="text-xs text-slate-400 space-y-1">
+              {(g4.playbooks as { id?: string; name?: string; raci?: string }[]).map((p, i) => (
+                <li key={i}><strong>{p.name}</strong> — RACI: {p.raci}</li>
+              ))}
+            </ul>
+          ) : <p className="text-slate-500 text-sm">—</p>}
+        </div>
       </div>
     </div>
   );

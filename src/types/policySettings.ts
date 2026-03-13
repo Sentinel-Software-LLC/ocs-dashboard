@@ -239,8 +239,9 @@ export const PRESET_VALUES: Record<string, Record<string, number>> = {
     historyDepthSparse: 50,
     inboundDustCautionRisk: 50,
   },
+  /** Time-Sentry: Same base as CommunityTrust but 90% cap reduction 8PM–6AM UTC (Ghost Hours). Higher day cap = more permissive during day; night cap = 10% of this. */
   TimeSentry: {
-    sovereignCap: 500,
+    sovereignCap: 5000,
     sovereignCapWindowHours: 24,
     maxRiskFloor: 40,
     blockThreshold: 80,
