@@ -81,6 +81,7 @@ export default function SovereignConfigurator({
   const [isCustomStored, setIsCustomStored] = useState(false);
   const [policyTestsLoading, setPolicyTestsLoading] = useState(false);
   const [policyTestResults, setPolicyTestResults] = useState<{ outcome: string; expected: string; pass: boolean }[] | null>(null);
+  const [toast, setToast] = useState<{ message: string; success: boolean } | null>(null);
 
   useEffect(() => {
     setAddress(targetAddress);
