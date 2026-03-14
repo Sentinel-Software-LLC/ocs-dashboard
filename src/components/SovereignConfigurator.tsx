@@ -53,11 +53,13 @@ function getInitialSettings(posture: DefensePosture): SettingsState {
 interface SovereignConfiguratorProps {
   targetAddress?: string;
   onAddressChange?: (address: string) => void;
+  onExerciseSuccess?: () => void;
 }
 
 export default function SovereignConfigurator({
   targetAddress = "",
   onAddressChange,
+  onExerciseSuccess,
 }: SovereignConfiguratorProps) {
   const [address, setAddress] = useState(targetAddress);
   const [useCustomAddress, setUseCustomAddress] = useState(false);
