@@ -11,6 +11,12 @@ const nextConfig = {
   },
   // A4: CSP and security headers
   async headers() {
+    const engineUrl = process.env.NEXT_PUBLIC_ENGINE_URL || '';
+    const connectSrc = ["'self'", "http://localhost:*", "http://127.0.0.1:*", "ws:", "wss:"];
+    if (engineUrl) connectSrc.push(engineUrl);
+    // Local dev: allow 192.168.69.x (CSP doesn't support host wildcards; add common dev IPs)
+    connectSrc.push("http://192.168.69.5:*", "http://192.168.69.10:*", "http://192.168.69.20:*");
+
     return [
       {
         source: '/:path*',
@@ -26,7 +32,7 @@ const nextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data:",
-              "connect-src 'self' http://localhost:* http://192.168.69.*:* ws: wss:",
+              `connect-src ${connectSrc.join(' ')}`,
               "frame-ancestors 'none'",
             ].join('; '),
           },

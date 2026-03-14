@@ -634,7 +634,12 @@ export default function Home() {
       {connectionError && (
         <div className="mb-4 p-4 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">
           <strong>Connection Error:</strong> {connectionError}
-          <p className="mt-2 text-xs text-slate-400">Run <code className="bg-slate-800 px-1 rounded">dotnet run</code> in the PGTAIL.Engine folder. Ensure PostgreSQL at 192.168.69.20 is reachable.</p>
+          <p className="mt-2 text-xs text-slate-400">
+            {ENGINE_BASE.startsWith('http://localhost') || ENGINE_BASE.includes('192.168')
+              ? <>Run <code className="bg-slate-800 px-1 rounded">dotnet run</code> in the PGTAIL.Engine folder. Ensure PostgreSQL at 192.168.69.20 is reachable.</>
+              : <>Check that the Engine at <code className="bg-slate-800 px-1 rounded">{ENGINE_BASE}</code> is running and CORS allows this origin. Verify <code>NEXT_PUBLIC_ENGINE_URL</code> in Vercel.</>
+            }
+          </p>
         </div>
       )}
 
