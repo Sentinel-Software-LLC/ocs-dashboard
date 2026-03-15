@@ -10,23 +10,7 @@ import {
   type PolicySettingDef,
 } from "@/types/policySettings";
 
-const API_BASE = (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_ENGINE_URL ? process.env.NEXT_PUBLIC_ENGINE_URL : "http://localhost:8080") + "/api/PGTAIL";
-
-/** Curated demo addresses that exhibit different behaviors for policy configuration. */
-const DEMO_ADDRESSES: { address: string; label: string; behavior: string; network: string }[] = [
-  { address: "test_trusted_partner", label: "Trusted Partner", behavior: "C7/E4 — Sweet spot, auto-approval", network: "Mock" },
-  { address: "test_mature_wallet", label: "Mature Wallet", behavior: "E7 — Mature history, control group", network: "Mock" },
-  { address: "test_peeling_chain", label: "Peeling Chain", behavior: "E6 — Layering detection, fast-drain", network: "Mock" },
-  { address: "test_virgin_wallet", label: "Virgin Wallet", behavior: "E7 — Zero history, BLOCKED", network: "Mock" },
-  { address: "rff5UDgUy9NvcpDNWUqw4jwFMoXWu855Nt", label: "Blacklist", behavior: "B2 — Known scammer, always blocked", network: "XRP" },
-  { address: "test_community_verified", label: "Community Verified", behavior: "T-8.1 social rules", network: "Mock" },
-  { address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", label: "Genesis Admin", behavior: "Sovereign admin", network: "ETH" },
-];
-
-function truncateAddress(addr: string, head = 8, tail = 6): string {
-  if (addr.length <= 24) return addr;
-  return `${addr.slice(0, head)}…${addr.slice(-tail)}`;
-}
+const API_BASE = (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_ENGINE_URL ? process.env.NEXT_PUBLIC_ENGINE_URL : "http://localhost:5193") + "/api/PGTAIL";
 
 type DefensePosture = "CurrentSettings" | "ZeroTrust" | "CommunityTrust" | "Institutional" | "Custom";
 
@@ -51,18 +35,16 @@ function getInitialSettings(posture: DefensePosture): SettingsState {
 }
 
 interface SovereignConfiguratorProps {
-  targetAddress?: string;
-  onAddressChange?: (address: string) => void;
+  /** User's address — policy applies when this address sends. Set by wallet connect or session. */
+  targetAddress: string;
   onExerciseSuccess?: () => void;
 }
 
 export default function SovereignConfigurator({
-  targetAddress = "",
-  onAddressChange,
+  targetAddress,
   onExerciseSuccess,
 }: SovereignConfiguratorProps) {
-  const [address, setAddress] = useState(targetAddress);
-  const [useCustomAddress, setUseCustomAddress] = useState(false);
+  const address = targetAddress;
   const [selectedPosture, setSelectedPosture] = useState<DefensePosture>("CurrentSettings");
   const [settings, setSettings] = useState<SettingsState>(() => getInitialSettings("CommunityTrust"));
   /** Last preset selected (for Custom inheritance). Excludes CurrentSettings and Custom. */
@@ -82,11 +64,6 @@ export default function SovereignConfigurator({
   const [policyTestsLoading, setPolicyTestsLoading] = useState(false);
   const [policyTestResults, setPolicyTestResults] = useState<{ outcome: string; expected: string; pass: boolean }[] | null>(null);
   const [toast, setToast] = useState<{ message: string; success: boolean } | null>(null);
-
-  useEffect(() => {
-    setAddress(targetAddress);
-    setUseCustomAddress(!DEMO_ADDRESSES.some((d) => d.address.toLowerCase() === targetAddress.toLowerCase()));
-  }, [targetAddress]);
 
   useEffect(() => {
     if (!address.trim()) {
@@ -146,9 +123,9 @@ export default function SovereignConfigurator({
     const allowAmt = Math.max(1, Math.floor(cap * 0.5));
     const warnAmt = Math.max(allowAmt + 1, Math.floor(cap * 2));
     const scenarios = [
-      { label: "ALLOW", body: { FromAddress: "test_trusted_partner", ToAddress: "test_mature_wallet", Amount: String(allowAmt) }, expected: "APPROVED" },
-      { label: "WARN (MFA)", body: { FromAddress: "test_trusted_partner", ToAddress: "test_mature_wallet", Amount: String(warnAmt) }, expected: "MFA" },
-      { label: "BLOCKED", body: { FromAddress: "test_peeling_chain", ToAddress: "rff5udguy9nvcpdnwuqw4jwfmoxwu855nt", Amount: "1" }, expected: "BLOCKED" },
+      { label: "Low risk", body: { FromAddress: "test_trusted_partner", ToAddress: "test_mature_wallet", Amount: String(allowAmt) }, expected: "APPROVED" },
+      { label: "Moderate risk", body: { FromAddress: "test_trusted_partner", ToAddress: "test_mature_wallet", Amount: String(warnAmt) }, expected: "MFA" },
+      { label: "High risk", body: { FromAddress: "test_trusted_partner", ToAddress: "test_blacklisted", Amount: "1" }, expected: "BLOCKED" },
     ];
     const results: { outcome: string; expected: string; pass: boolean }[] = [];
     for (const s of scenarios) {
@@ -322,41 +299,6 @@ export default function SovereignConfigurator({
 
   return (
     <div className="space-y-6">
-      <div>
-        <label className="block text-sm font-medium text-slate-400 mb-1">Target Address (Registry Entry)</label>
-        <select
-          value={useCustomAddress ? "__custom__" : (DEMO_ADDRESSES.find((d) => d.address.toLowerCase() === address.toLowerCase())?.address ?? "__custom__")}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (v === "__custom__") {
-              setUseCustomAddress(true);
-              setAddress("");
-            } else {
-              setUseCustomAddress(false);
-              setAddress(v);
-              onAddressChange?.(v);
-            }
-          }}
-          className="w-full bg-slate-700 text-slate-200 px-4 py-2 rounded border border-slate-600 focus:border-slate-500 focus:ring-1 focus:ring-slate-500"
-        >
-          <option value="__custom__">— Custom address —</option>
-          {DEMO_ADDRESSES.map((d) => (
-            <option key={d.address} value={d.address}>
-              [{d.network}] {d.label} — {truncateAddress(d.address)} — {d.behavior}
-            </option>
-          ))}
-        </select>
-        {useCustomAddress && (
-          <input
-            type="text"
-            value={address}
-            onChange={(e) => { setAddress(e.target.value); onAddressChange?.(e.target.value); }}
-            placeholder="0x... or r..."
-            className="mt-2 w-full bg-slate-700 text-slate-200 px-4 py-2 rounded border border-slate-600 focus:border-slate-500 focus:ring-1 focus:ring-slate-500"
-          />
-        )}
-      </div>
-
       <div>
         <p className="text-sm font-bold text-slate-400 mb-3">Defense Posture</p>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">

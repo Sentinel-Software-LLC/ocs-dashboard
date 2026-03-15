@@ -50,12 +50,30 @@ function parseForensicDetails(detailsJson: string): ForensicDetails | null {
   }
 }
 
-function getStatus(log: RiskLog): 'BLOCKED' | 'MFA_REQUIRED' | 'APPROVED' {
+type InternalStatus = 'BLOCKED' | 'MFA_REQUIRED' | 'APPROVED';
+
+function getStatus(log: RiskLog): InternalStatus {
   const v = (log.verdict || '').toUpperCase();
   if (v.includes('BLOCKED')) return 'BLOCKED';
   if (v.includes('MFA_REQUIRED')) return 'MFA_REQUIRED';
   if (log.riskScore > 50) return 'BLOCKED';
   return 'APPROVED';
+}
+
+/** Risk assessment (separate column). OCS assesses risk and communicates. */
+function getRiskLabel(status: InternalStatus | 'APPROVED' | 'MFA' | 'BLOCKED'): string {
+  if (status === 'APPROVED') return 'Low risk';
+  if (status === 'MFA' || status === 'MFA_REQUIRED') return 'Moderate risk';
+  if (status === 'BLOCKED') return 'High risk';
+  return '—';
+}
+
+/** Authorization outcome (Expected / Actual). User decides. */
+function getAuthorizationLabel(status: InternalStatus | 'APPROVED' | 'MFA' | 'BLOCKED'): string {
+  if (status === 'APPROVED') return 'Authorized';
+  if (status === 'MFA' || status === 'MFA_REQUIRED') return 'Requires Authorization';
+  if (status === 'BLOCKED') return 'Not Authorized';
+  return '—';
 }
 
 function formatTime(ts: string): string {
@@ -79,18 +97,45 @@ interface RegistryEntry {
   notes: string;
 }
 
-const ENGINE_BASE = process.env.NEXT_PUBLIC_ENGINE_URL || 'http://localhost:8080';
+const ENGINE_BASE = process.env.NEXT_PUBLIC_ENGINE_URL || 'http://localhost:5193';
 const API_BASE = `${ENGINE_BASE}/api/PGTAIL`;
 const DIAGNOSTICS_BASE = `${ENGINE_BASE}/api/diagnostics`;
 
+/** MVP-1 demo user's wallets. Label for display and purpose/description. */
+const MVP1_WALLET_INFO: Record<string, { label: string; purpose: string }> = {
+  test_trusted_partner: { label: 'Trusted Partner (Primary)', purpose: 'Primary wallet for daily transactions and MVP-1 demo. Verified OCS partner.' },
+  test_mature_wallet: { label: 'Mature Wallet', purpose: 'Wallet with established history. Supports time-based policies (e.g. Ghost Hours).' },
+  test_community_verified: { label: 'Community Verified', purpose: 'Community-approved addresses. Balanced auto-approval for known entities.' },
+  test_peeling_chain: { label: 'Peeling Chain', purpose: 'Used for peeling and layering detection scenarios. Higher scrutiny.' },
+};
+
 export default function Home() {
+  const [loggedInUser, setLoggedInUser] = useState<'mvp1' | null>(null);
   const [logs, setLogs] = useState<RiskLog[]>([]);
   const [forensicLog, setForensicLog] = useState<RiskLog | null>(null);
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
   const [activeTab, setActiveTab] = useState<'traffic' | 'registry' | 'policy' | 'audit' | 'compliance' | 'mvp'>('traffic');
   const [selectedMvp, setSelectedMvp] = useState<1 | 2 | null>(null);
-  const [configuratorAddress, setConfiguratorAddress] = useState('');
+  /** Selected wallet for policy config. Set from My Wallets or Registry Configure. */
+  const [userAddress, setUserAddress] = useState('test_trusted_partner');
   const [connectionError, setConnectionError] = useState<string | null>(null);
+
+  /** MVP-1's connected wallets = whitelisted registry entries. Fallback to known addresses if registry empty. */
+  const myWallets = loggedInUser === 'mvp1'
+    ? (registry.filter((e) => e.entryType === 1).length > 0
+        ? registry.filter((e) => e.entryType === 1)
+        : Object.keys(MVP1_WALLET_INFO).map((addr) => ({
+            id: 0,
+            hexAddress: addr,
+            entryType: 1,
+            confidence: 100,
+            sovereignCap: 1000,
+            maxRiskFloor: 50,
+            minConfidenceCeiling: 60,
+            trustProfile: 1,
+            notes: MVP1_WALLET_INFO[addr].label,
+          })))
+    : [];
 
   const fetchLogs = async () => {
     setConnectionError(null);
@@ -268,6 +313,7 @@ export default function Home() {
   useEffect(() => { fetchLogs(); }, []);
   useEffect(() => { fetchIncidentSwitch(); }, []);
   useEffect(() => { if (activeTab === 'registry') fetchRegistry(); }, [activeTab]);
+  useEffect(() => { if (loggedInUser === 'mvp1') fetchRegistry(); }, [loggedInUser]);
 
   // Auto-refresh traffic every 5 seconds when on Live Traffic tab
   useEffect(() => {
@@ -276,8 +322,29 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
+  if (!loggedInUser) {
+    return (
+      <main className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-8">
+        <div className="text-center max-w-md">
+          <h1 className="text-4xl font-bold text-red-500 tracking-tight mb-4">OCS Station Master</h1>
+          <p className="text-slate-400 mb-8">Sign in to configure your wallets and run the MVP-1 demo.</p>
+          <button
+            onClick={() => { setLoggedInUser('mvp1'); setActiveTab('policy'); }}
+            className="w-full bg-red-600 hover:bg-red-500 px-8 py-4 rounded-lg font-bold text-lg transition-all"
+          >
+            Log in as MVP-1
+          </button>
+          <p className="text-slate-500 text-sm mt-6">Demo user with pre-seeded wallets for testing.</p>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="p-8 pb-12 bg-slate-900 min-h-screen text-white font-sans">
+      <div className="mb-4 p-3 rounded-lg border border-slate-600 bg-slate-800/50 text-slate-300 text-sm">
+        <strong>OCS assesses risk and communicates.</strong> You decide whether to allow or reject each transaction.
+      </div>
       {incidentSwitchEnabled && (
         <div className="mb-4 p-4 bg-amber-900/50 border border-amber-600 rounded-lg flex items-center justify-between">
           <span className="font-bold text-amber-400">E5 Incident Switch: ENABLED — Only whitelisted recipients allowed</span>
@@ -291,7 +358,16 @@ export default function Home() {
         </div>
       )}
       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold text-red-500 tracking-tight">OCS Station Master</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-3xl font-bold text-red-500 tracking-tight">OCS Station Master</h1>
+          <span className="text-slate-400 text-sm">Logged in as MVP-1</span>
+          <button
+            onClick={() => setLoggedInUser(null)}
+            className="text-slate-500 hover:text-slate-300 text-sm"
+          >
+            Log out
+          </button>
+        </div>
         <div className="flex gap-2">
           <button
             onClick={() => setActiveTab('traffic')}
@@ -374,8 +450,9 @@ export default function Home() {
                     </div>
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => { setConfiguratorAddress(entry.hexAddress); setActiveTab('policy'); }}
+                        onClick={() => { setUserAddress(entry.hexAddress); setActiveTab('policy'); }}
                         className="text-[10px] bg-slate-600 hover:bg-slate-500 px-3 py-1 rounded font-bold"
+                        title="Configure policy for this address"
                       >
                         Configure
                       </button>
@@ -400,15 +477,67 @@ export default function Home() {
 
       {activeTab === 'policy' && (
         <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
-          <h2 className="text-xl mb-4 text-slate-300 underline underline-offset-8">Policy Configurator</h2>
-          <p className="text-slate-400 text-sm mb-2">Select a defense posture and deploy to sync with Node .20.</p>
-          <p className="text-slate-500 text-xs mb-6">
-            Operator guide: <a href="https://github.com/onchainsentinel/ocs-docs/blob/main/01_architecture/OCS_Policy_Configuration_Guide.md" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">OCS_Policy_Configuration_Guide.md</a> — documents each setting.
-          </p>
-          <SovereignConfigurator
-            targetAddress={configuratorAddress}
-            onAddressChange={setConfiguratorAddress}
-          />
+          <h2 className="text-xl mb-2 text-slate-300 underline underline-offset-8">My Wallets</h2>
+          <p className="text-slate-400 text-sm mb-4">Select a wallet to configure its policy. Policy applies when that wallet sends transactions.</p>
+          <div className="flex flex-wrap items-start gap-4 mb-8">
+            <div className="flex-shrink-0">
+              <label className="block text-xs text-slate-500 mb-1">Wallet</label>
+              <select
+                value={userAddress}
+                onChange={(e) => setUserAddress(e.target.value)}
+                className="bg-slate-700 text-slate-200 px-4 py-2 rounded-lg border border-slate-600 min-w-[16rem] font-mono text-sm"
+              >
+                {myWallets.map((w) => (
+                  <option key={w.hexAddress} value={w.hexAddress}>
+                    {MVP1_WALLET_INFO[w.hexAddress]?.label ?? w.hexAddress}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {(() => {
+              const selected = myWallets.find((w) => w.hexAddress.toLowerCase() === userAddress.toLowerCase());
+              const info = selected ? MVP1_WALLET_INFO[selected.hexAddress] : null;
+              return selected ? (
+                <div className="flex-1 min-w-0 p-4 rounded-lg border border-slate-600 bg-slate-900/50 space-y-3">
+                  <div>
+                    <p className="text-xs text-slate-500 mb-1">Address</p>
+                    <p className="font-mono text-sm text-slate-200 break-all">{selected.hexAddress}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500 mb-1">Purpose</p>
+                    <p className="text-sm text-slate-300">{info?.purpose ?? selected.notes ?? '—'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">Cap: ${selected.sovereignCap ?? '—'} · Profile: {TRUST_PROFILES.find((p) => p.value === selected.trustProfile)?.label ?? '—'}</p>
+                  </div>
+                </div>
+              ) : null;
+            })()}
+          </div>
+          <h3 className="text-lg mb-2 text-slate-300">Policy for {MVP1_WALLET_INFO[userAddress]?.label ?? userAddress}</h3>
+          <p className="text-slate-400 text-sm mb-4">Choose a defense posture for this wallet, or deploy a Custom policy with your own thresholds.</p>
+          <details className="mb-4 rounded-lg border border-slate-600 bg-slate-900/30">
+            <summary className="px-4 py-2 cursor-pointer text-slate-400 hover:text-slate-200 text-sm font-medium">MVP-1 Demo Guide — click to expand</summary>
+            <div className="px-4 pb-4 pt-2 text-sm text-slate-400 space-y-3">
+              <p className="font-medium text-slate-300">1. Configure policy</p>
+              <ul className="list-disc list-inside space-y-1 text-xs">
+                <li>Under Defense Posture, click <strong>Custom</strong></li>
+                <li>Expand Trust-Range → set Sovereign Cap to <strong>1000</strong></li>
+                <li>Click <strong>Deploy Sovereign Law</strong></li>
+              </ul>
+              <p className="font-medium text-slate-300">2. Run traffic</p>
+              <ul className="list-disc list-inside space-y-1 text-xs">
+                <li>Go to <strong>▶ Run MVP</strong> → choose MVP-1 → <strong>▶ Run MVP-1</strong></li>
+                <li>Or use <strong>Audit & Export</strong> → Check Risk form</li>
+              </ul>
+              <p className="font-medium text-slate-300">3. Verify outcomes</p>
+              <ul className="list-disc list-inside space-y-1 text-xs">
+                <li><strong>Live Traffic</strong> tab shows Risk (Low/Moderate/High) and Authorization (Authorized/Not Authorized/Requires Authorization)</li>
+                <li>Click <strong>View Forensics</strong> on any row for the decision matrix</li>
+              </ul>
+            </div>
+          </details>
+          <SovereignConfigurator targetAddress={userAddress} />
         </div>
       )}
 
@@ -483,7 +612,7 @@ export default function Home() {
                 >
                   <p className="font-bold text-xl text-emerald-400 mb-2">MVP-1</p>
                   <p className="text-sm text-slate-400 mb-2">The Sovereign Foundation</p>
-                  <p className="text-xs text-slate-500">6 scenarios: C7, B2, E6, E7, E4</p>
+                  <p className="text-xs text-slate-500">18 scenarios: C7, B2, E6, E7, E4, H3 (all 3 extremes per feature)</p>
                   <p className="text-xs text-slate-500 mt-1">Prerequisite: Policy Configurator → Trusted Partner → Custom → Sovereign Cap $1000 → Deploy</p>
                 </button>
                 <button
@@ -512,7 +641,7 @@ export default function Home() {
                   <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
                     <p className="text-sm font-bold text-slate-300 mb-2">MVP-1 Prerequisites</p>
                     <ul className="text-xs text-slate-400 list-disc list-inside space-y-1">
-                      <li>Engine running (Docker on 8080 or dotnet run)</li>
+                      <li>Engine running (dotnet run on 5193, or Docker on 8080)</li>
                       <li>Database seeded (POST /api/diagnostics/seed)</li>
                       <li>Policy Configurator: Trusted Partner → Custom → Sovereign Cap $1000 → Deploy</li>
                     </ul>
@@ -546,6 +675,7 @@ export default function Home() {
                           <tr className="border-b border-slate-600 text-slate-500">
                             <th className="p-2">Feature</th>
                             <th className="p-2">Scenario</th>
+                            <th className="p-2">Risk</th>
                             <th className="p-2">Expected</th>
                             <th className="p-2">Actual</th>
                             <th className="p-2">Pass</th>
@@ -556,8 +686,9 @@ export default function Home() {
                             <tr key={i} className={`border-b border-slate-700/50 ${r.pass ? '' : 'bg-red-900/20'}`}>
                               <td className="p-2 font-mono text-slate-300">{r.scenario.featureId}</td>
                               <td className="p-2 text-slate-300">{r.scenario.label}</td>
-                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.scenario.expected === 'APPROVED' ? 'bg-green-900/50' : r.scenario.expected === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{r.scenario.expected}</span></td>
-                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.actual === 'APPROVED' ? 'bg-green-900/50' : r.actual === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{r.actual}</span></td>
+                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.scenario.expected === 'APPROVED' ? 'bg-green-900/20 text-green-300' : r.scenario.expected === 'MFA' ? 'bg-amber-900/20 text-amber-300' : 'bg-red-900/20 text-red-300'}`}>{getRiskLabel(r.scenario.expected)}</span></td>
+                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.scenario.expected === 'APPROVED' ? 'bg-green-900/50' : r.scenario.expected === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{getAuthorizationLabel(r.scenario.expected)}</span></td>
+                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.actual === 'APPROVED' ? 'bg-green-900/50' : r.actual === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{getAuthorizationLabel(r.actual)}</span></td>
                               <td className="p-2 font-bold">{r.pass ? '✓' : '✗'}</td>
                             </tr>
                           ))}
@@ -605,6 +736,7 @@ export default function Home() {
                           <tr className="border-b border-slate-600 text-slate-500">
                             <th className="p-2">Feature</th>
                             <th className="p-2">Scenario</th>
+                            <th className="p-2">Risk</th>
                             <th className="p-2">Expected</th>
                             <th className="p-2">Actual</th>
                             <th className="p-2">Pass</th>
@@ -615,8 +747,9 @@ export default function Home() {
                             <tr key={i} className={`border-b border-slate-700/50 ${r.pass ? '' : 'bg-red-900/20'}`}>
                               <td className="p-2 font-mono text-slate-300">{r.scenario.featureId}</td>
                               <td className="p-2 text-slate-300">{r.scenario.label}</td>
-                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.scenario.expected === 'APPROVED' ? 'bg-green-900/50' : r.scenario.expected === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{r.scenario.expected}</span></td>
-                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.actual === 'APPROVED' ? 'bg-green-900/50' : r.actual === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{r.actual}</span></td>
+                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.scenario.expected === 'APPROVED' ? 'bg-green-900/20 text-green-300' : r.scenario.expected === 'MFA' ? 'bg-amber-900/20 text-amber-300' : 'bg-red-900/20 text-red-300'}`}>{getRiskLabel(r.scenario.expected)}</span></td>
+                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.scenario.expected === 'APPROVED' ? 'bg-green-900/50' : r.scenario.expected === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{getAuthorizationLabel(r.scenario.expected)}</span></td>
+                              <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.actual === 'APPROVED' ? 'bg-green-900/50' : r.actual === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'}`}>{getAuthorizationLabel(r.actual)}</span></td>
                               <td className="p-2 font-bold">{r.pass ? '✓' : '✗'}</td>
                             </tr>
                           ))}
@@ -636,7 +769,7 @@ export default function Home() {
           <strong>Connection Error:</strong> {connectionError}
           <p className="mt-2 text-xs text-slate-400">
             {ENGINE_BASE.startsWith('http://localhost') || ENGINE_BASE.includes('192.168')
-              ? <>Run <code className="bg-slate-800 px-1 rounded">dotnet run</code> in the PGTAIL.Engine folder. Ensure PostgreSQL at 192.168.69.20 is reachable.</>
+              ? <>Run <code className="bg-slate-800 px-1 rounded">dotnet run</code> in the PGTAIL.Engine folder. With UseLocalDb, no PostgreSQL required.</>
               : <>Check that the Engine at <code className="bg-slate-800 px-1 rounded">{ENGINE_BASE}</code> is running and CORS allows this origin. Verify <code>NEXT_PUBLIC_ENGINE_URL</code> in Vercel.</>
             }
           </p>
@@ -657,6 +790,7 @@ export default function Home() {
                 <tr className="border-b border-slate-600 text-slate-500">
                   <th className="p-2">Feature</th>
                   <th className="p-2">Scenario</th>
+                  <th className="p-2">Risk</th>
                   <th className="p-2">Expected</th>
                   <th className="p-2">Actual</th>
                   <th className="p-2">Pass</th>
@@ -667,17 +801,18 @@ export default function Home() {
                   <tr key={i} className={`border-b border-slate-700/50 ${r.pass ? '' : 'bg-red-900/20'}`}>
                     <td className="p-2 font-mono text-slate-300">{r.scenario.featureId}</td>
                     <td className="p-2 text-slate-300">{r.scenario.label}</td>
+                    <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.scenario.expected === 'APPROVED' ? 'bg-green-900/20 text-green-300' : r.scenario.expected === 'MFA' ? 'bg-amber-900/20 text-amber-300' : 'bg-red-900/20 text-red-300'}`}>{getRiskLabel(r.scenario.expected)}</span></td>
                     <td className="p-2">
                       <span className={`px-1.5 py-0.5 rounded text-xs ${
                         r.scenario.expected === 'APPROVED' ? 'bg-green-900/50' :
                         r.scenario.expected === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'
-                      }`}>{r.scenario.expected}</span>
+                      }`}>{getAuthorizationLabel(r.scenario.expected)}</span>
                     </td>
                     <td className="p-2">
                       <span className={`px-1.5 py-0.5 rounded text-xs ${
                         r.actual === 'APPROVED' ? 'bg-green-900/50' :
                         r.actual === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'
-                      }`}>{r.actual}</span>
+                      }`}>{getAuthorizationLabel(r.actual)}</span>
                     </td>
                     <td className="p-2 font-bold">{r.pass ? '✓' : '✗'}</td>
                   </tr>
@@ -698,6 +833,7 @@ export default function Home() {
                 <tr className="border-b border-slate-600 text-slate-500">
                   <th className="p-2">Feature</th>
                   <th className="p-2">Scenario</th>
+                  <th className="p-2">Risk</th>
                   <th className="p-2">Expected</th>
                   <th className="p-2">Actual</th>
                   <th className="p-2">Pass</th>
@@ -708,17 +844,18 @@ export default function Home() {
                   <tr key={i} className={`border-b border-slate-700/50 ${r.pass ? '' : 'bg-red-900/20'}`}>
                     <td className="p-2 font-mono text-slate-300">{r.scenario.featureId}</td>
                     <td className="p-2 text-slate-300">{r.scenario.label}</td>
+                    <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.scenario.expected === 'APPROVED' ? 'bg-green-900/20 text-green-300' : r.scenario.expected === 'MFA' ? 'bg-amber-900/20 text-amber-300' : 'bg-red-900/20 text-red-300'}`}>{getRiskLabel(r.scenario.expected)}</span></td>
                     <td className="p-2">
                       <span className={`px-1.5 py-0.5 rounded text-xs ${
                         r.scenario.expected === 'APPROVED' ? 'bg-green-900/50' :
                         r.scenario.expected === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'
-                      }`}>{r.scenario.expected}</span>
+                      }`}>{getAuthorizationLabel(r.scenario.expected)}</span>
                     </td>
                     <td className="p-2">
                       <span className={`px-1.5 py-0.5 rounded text-xs ${
                         r.actual === 'APPROVED' ? 'bg-green-900/50' :
                         r.actual === 'MFA' ? 'bg-amber-900/50' : 'bg-red-900/50'
-                      }`}>{r.actual}</span>
+                      }`}>{getAuthorizationLabel(r.actual)}</span>
                     </td>
                     <td className="p-2 font-bold">{r.pass ? '✓' : '✗'}</td>
                   </tr>
@@ -735,9 +872,9 @@ export default function Home() {
           <div className="mb-4 p-4 bg-amber-900/30 border border-amber-600/50 rounded-lg flex items-center gap-3">
             <span className="text-2xl">⚠️</span>
             <div>
-              <p className="font-bold text-amber-400">MFA Required — Trust-Range Breach</p>
+              <p className="font-bold text-amber-400">Your decision required</p>
               <p className="text-sm text-amber-200/90">
-                One or more transactions require manual approval. Click &quot;View Forensics&quot; to see the specific breach (cap, risk, or confidence).
+                One or more transactions need your approval. OCS assessed the risk — you decide whether to allow. Click &quot;View Forensics&quot; for details.
               </p>
             </div>
           </div>
@@ -749,13 +886,14 @@ export default function Home() {
               <th className="p-3 text-sm uppercase tracking-wider" title="Feature that produced this log (MVP-1: C7, B2, E6, E7, E4; MVP-2: H1–H3, J1, K1, I2, B1)">Feature</th>
               <th className="p-3 text-sm uppercase tracking-wider">Target Address / Alert</th>
               <th className="p-3 text-sm uppercase tracking-wider">Risk Score</th>
-              <th className="p-3 text-sm uppercase tracking-wider">Status</th>
+              <th className="p-3 text-sm uppercase tracking-wider">Risk</th>
+              <th className="p-3 text-sm uppercase tracking-wider">Authorization</th>
               <th className="p-3 text-sm uppercase tracking-wider text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
             {logs.length === 0 ? (
-              <tr><td colSpan={6} className="p-8 text-center text-slate-500 italic">No traffic detected. Standby...</td></tr>
+              <tr><td colSpan={7} className="p-8 text-center text-slate-500 italic">No traffic detected. Standby...</td></tr>
             ) : (
               logs.map((log, i) => {
                 const status = getStatus(log);
@@ -792,12 +930,21 @@ export default function Home() {
                     </td>
                     <td className="p-3 font-bold text-slate-300">{log.riskScore}/100</td>
                     <td className="p-3">
+                      <span className={`text-[11px] px-2 py-0.5 rounded ${
+                        status === 'BLOCKED' ? 'bg-red-900/20 text-red-300' :
+                        status === 'MFA_REQUIRED' ? 'bg-amber-900/20 text-amber-300' :
+                        'bg-green-900/20 text-green-300'
+                      }`}>
+                        {getRiskLabel(status)}
+                      </span>
+                    </td>
+                    <td className="p-3">
                       <span className={`font-black px-2 py-0.5 rounded text-[11px] ${
                         status === 'BLOCKED' ? 'bg-red-900/30 text-red-400' :
                         status === 'MFA_REQUIRED' ? 'bg-amber-900/30 text-amber-400' :
                         'bg-green-900/30 text-green-400'
-                      }`}>
-                        {status}
+                      }`} title="OCS assesses risk. You decide whether to allow the transaction.">
+                        {getAuthorizationLabel(status)}
                       </span>
                     </td>
                     <td className="p-3 text-right flex gap-2 justify-end">
@@ -861,15 +1008,15 @@ function CheckRiskForm({ apiBase, onSuccess }: { apiBase: string; onSuccess: () 
       });
       if (r.status === 200) {
         const data = await r.json();
-        setResult(`OK: ${data.precheckVerdict ?? data.trustRangeVerdict ?? 'PASS'}`);
+        setResult(`Authorized: ${data.precheckVerdict ?? data.trustRangeVerdict ?? 'You may proceed'}`);
         onSuccess();
       } else if (r.status === 202) {
         const data = await r.json();
-        setResult(`MFA: ${data.riskAdvice ?? 'MFA required'}`);
+        setResult(`Requires Authorization: ${data.riskAdvice ?? 'Review and decide'}`);
         onSuccess();
       } else if (r.status === 403) {
         const data = await r.json().catch(() => ({}));
-        setResult(`BLOCKED: ${data.description ?? data.riskAdvice ?? 'Blocked'}`);
+        setResult(`Not Authorized: ${data.description ?? data.riskAdvice ?? 'Review before proceeding'}`);
         onSuccess();
       } else {
         setResult(`Error: ${r.status}`);
@@ -941,9 +1088,9 @@ function ForensicModal({ log, onClose }: { log: RiskLog; onClose: () => void }) 
           <div className="space-y-4">
             {status === 'MFA_REQUIRED' && (
               <div className="p-4 bg-amber-900/40 border border-amber-600/60 rounded-lg">
-                <p className="text-sm font-bold text-amber-400 mb-1">Trust-Range Breach — MFA Required</p>
+                <p className="text-sm font-bold text-amber-400 mb-1">Your decision required</p>
                 <p className="text-slate-200 text-sm">{details?.trustRangeReason || details?.decisionMatrix?.breachReason || log.reason || 'N/A'}</p>
-                <p className="text-xs text-amber-300/80 mt-2">User must manually approve or reject this transaction.</p>
+                <p className="text-xs text-amber-300/80 mt-2">OCS assessed the risk. You decide whether to allow or reject this transaction.</p>
               </div>
             )}
             {details?.washSaleWarning && (
