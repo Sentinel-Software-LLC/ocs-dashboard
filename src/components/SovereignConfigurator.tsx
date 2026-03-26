@@ -38,15 +38,26 @@ interface SovereignConfiguratorProps {
   /** User's address — policy applies when this address sends. Set by wallet connect or session. */
   targetAddress: string;
   onExerciseSuccess?: () => void;
+  /** When registry changes (e.g. after profile update), refetch current settings from API. */
+  registry?: unknown[];
+  incidentSwitchEnabled?: boolean;
+  incidentSwitchLoading?: boolean;
+  onToggleIncidentSwitch?: () => void;
 }
 
 export default function SovereignConfigurator({
   targetAddress,
   onExerciseSuccess,
+  registry,
+  incidentSwitchEnabled = false,
+  incidentSwitchLoading = false,
+  onToggleIncidentSwitch,
 }: SovereignConfiguratorProps) {
   const address = targetAddress;
   const [selectedPosture, setSelectedPosture] = useState<DefensePosture>("CurrentSettings");
   const [settings, setSettings] = useState<SettingsState>(() => getInitialSettings("CommunityTrust"));
+  /** DB values — never overwritten when user clicks a preset. Current Settings always shows this. */
+  const [currentSettingsFromDb, setCurrentSettingsFromDb] = useState<SettingsState>(() => getInitialSettings("CommunityTrust"));
   /** Last preset selected (for Custom inheritance). Excludes CurrentSettings and Custom. */
   const [lastPresetSelected, setLastPresetSelected] = useState<DefensePosture>("CommunityTrust");
   const [deploying, setDeploying] = useState(false);
@@ -67,8 +78,10 @@ export default function SovereignConfigurator({
 
   useEffect(() => {
     if (!address.trim()) {
+      const fallback = getInitialSettings("CommunityTrust");
+      setCurrentSettingsFromDb(fallback);
       setSelectedPosture("CurrentSettings");
-      setSettings(getInitialSettings("CommunityTrust"));
+      setSettings(fallback);
       return;
     }
     const loadEntry = async () => {
@@ -96,24 +109,29 @@ export default function SovereignConfigurator({
           for (const s of POLICY_SETTINGS) {
             if (overrides[s.key] != null) merged[s.key] = overrides[s.key];
           }
+          setCurrentSettingsFromDb(merged);
           setSettings(merged);
           setHardwareWalletRequiredAbove(entry.hardwareWalletRequiredAbove != null ? Number(entry.hardwareWalletRequiredAbove) : null);
           setSelectedPosture("CurrentSettings"); // Default: show what's in DB
           setIsCustomStored(profile === 2);
         } else {
+          const fallback = getInitialSettings("CommunityTrust");
+          setCurrentSettingsFromDb(fallback);
           setSelectedPosture("CurrentSettings");
-          setSettings(getInitialSettings("CommunityTrust"));
+          setSettings(fallback);
           setHardwareWalletRequiredAbove(null);
           setIsCustomStored(false);
         }
       } catch {
+        const fallback = getInitialSettings("CommunityTrust");
+        setCurrentSettingsFromDb(fallback);
         setSelectedPosture("CurrentSettings");
-        setSettings(getInitialSettings("CommunityTrust"));
+        setSettings(fallback);
         setIsCustomStored(false);
       }
     };
     loadEntry();
-  }, [address]);
+  }, [address, registry]);
 
   const runPolicyTests = async () => {
     if (!address.trim()) return;
@@ -201,6 +219,12 @@ export default function SovereignConfigurator({
         const data = await res.json().catch(() => ({}));
         throw new Error(data.message || `Request failed: ${res.status}`);
       }
+      // Update DB snapshot so Current Settings shows what we just deployed
+      if (selectedPosture === "Custom") {
+        setCurrentSettingsFromDb(settings);
+      } else {
+        setCurrentSettingsFromDb(getInitialSettings(selectedPosture));
+      }
       showToast("Sovereign Law Updated. Node .20 Synchronized.", true);
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Deploy failed.", false);
@@ -213,7 +237,8 @@ export default function SovereignConfigurator({
     setDeploySuccess(false);
     if (p.id === "CurrentSettings") {
       setSelectedPosture("CurrentSettings");
-      return; // View-only; settings already loaded from DB
+      setSettings(currentSettingsFromDb); // Always restore actual DB values
+      return;
     }
     if (p.id === "Custom") {
       // Custom uses current settings (from DB) as baseline — user can tweak from where they are
@@ -320,10 +345,11 @@ export default function SovereignConfigurator({
 
       <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50 space-y-4">
         <p className="text-sm font-bold text-slate-400">
-          {selectedPosture === "CurrentSettings" && "Current Settings (from database)"}
-          {selectedPosture === "Custom" && "Custom Thresholds — Slider: Zero-Trust to your value"}
+          Policy Settings
+          {selectedPosture === "CurrentSettings" && " (from database — what is deployed)"}
+          {selectedPosture === "Custom" && " (editable)"}
           {selectedPosture !== "CurrentSettings" && selectedPosture !== "Custom" && (
-            <span>Current Settings ({selectedPosture} preset)</span>
+            <span> ({POSTURES.find((x) => x.id === selectedPosture)?.title ?? selectedPosture} preset)</span>
           )}
         </p>
 
@@ -349,37 +375,79 @@ export default function SovereignConfigurator({
                   </thead>
                   <tbody>
                     {group.settings.map((s) => renderSettingRow(s, selectedPosture !== "Custom" /* Custom = editable */))}
-                    {group.key === "trustRange" && selectedPosture === "Custom" && (
+                    {group.key === "trustRange" && onToggleIncidentSwitch && (
                       <tr className="border-b border-slate-700/50">
                         <td className="py-2 pr-4">
                           <div className="flex items-center gap-1 min-w-0">
-                            <span className="text-slate-300 text-sm">Hardware Wallet Required Above (B1)</span>
-                            {address.toLowerCase().includes("test_trusted_partner") && (
-                              <span className="ml-2 text-[10px] text-amber-400" title="Sovereign Cap must be ≥5000 so B1 triggers (not C7 cap breach)">MVP-2 B1: Institutional→Custom, then 1000</span>
+                            <span className="text-slate-300 text-sm">Allow only Whitelisted recipients</span>
+                            <InfoTooltip
+                              title="Allow only Whitelisted recipients"
+                              description="When ON, all outbound transactions must go to recipients in your whitelist. Non-whitelisted destinations are blocked."
+                              zeroTrust="When ON, enforces whitelist-only mode."
+                              communityTrust="When ON, enforces whitelist-only mode."
+                              whereUsed="Blocks all non-whitelisted recipients when enabled."
+                            />
+                          </div>
+                        </td>
+                        <td className="py-2 px-3 text-right w-24 font-mono text-xs text-slate-500">—</td>
+                        <td className="py-2 px-3 w-28">
+                          {selectedPosture === "Custom" ? (
+                            <div className="flex items-center gap-2 justify-end">
+                              <button
+                                onClick={onToggleIncidentSwitch}
+                                disabled={incidentSwitchLoading}
+                                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${incidentSwitchEnabled ? "bg-amber-600" : "bg-slate-600"}`}
+                              >
+                                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${incidentSwitchEnabled ? "translate-x-6" : "translate-x-1"}`} />
+                              </button>
+                              <span className="text-xs text-slate-500">{incidentSwitchEnabled ? "ON" : "OFF"}</span>
+                            </div>
+                          ) : (
+                            <span className="font-mono text-slate-200 text-sm block text-right">
+                              {incidentSwitchEnabled ? "ON" : "OFF"}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 text-left w-24 font-mono text-xs text-slate-500">—</td>
+                      </tr>
+                    )}
+                    {group.key === "trustRange" && (
+                      <tr className="border-b border-slate-700/50">
+                        <td className="py-2 pr-4">
+                          <div className="flex items-center gap-1 min-w-0">
+                            <span className="text-slate-300 text-sm">Hardware Wallet Required Above</span>
+                            {address.toLowerCase().includes("test_trusted_partner") && selectedPosture === "Custom" && (
+                              <span className="ml-2 text-[10px] text-amber-400" title="Sovereign Cap must be ≥5000 for this scenario">MVP-2: Institutional→Custom, then 1000</span>
                             )}
                             <InfoTooltip
                               title="Hardware Wallet Required Above"
                               description="Amount (USD) above which a hardware wallet is required. Transactions above this threshold require IsHardwareWallet=true or MFA. 0 or empty = no requirement."
                               zeroTrust="Not used in Zero Trust (all tx require MFA)."
                               communityTrust="Optional; e.g. $10,000 for high-value tx."
-                              whereUsed="B1: CheckRisk blocks when amount exceeds threshold and IsHardwareWallet=false."
+                              whereUsed="CheckRisk blocks when amount exceeds threshold and IsHardwareWallet=false."
                             />
                           </div>
                         </td>
                         <td className="py-2 px-3 text-right w-24 font-mono text-xs text-slate-500">$0</td>
                         <td className="py-2 px-3 w-28">
-                          <input
-                            type="number"
-                            min={0}
-                            max={10_000_000}
-                            value={hardwareWalletRequiredAbove ?? ""}
-                            placeholder="None"
-                            onChange={(e) => {
-                              const v = e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0);
-                              setHardwareWalletRequiredAbove(v);
-                            }}
-                            className="w-full bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm border border-slate-600 focus:border-slate-500 focus:ring-1 focus:ring-slate-500 font-mono text-right"
-                          />
+                          {selectedPosture === "Custom" ? (
+                            <input
+                              type="number"
+                              min={0}
+                              max={10_000_000}
+                              value={hardwareWalletRequiredAbove ?? ""}
+                              placeholder="None"
+                              onChange={(e) => {
+                                const v = e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0);
+                                setHardwareWalletRequiredAbove(v);
+                              }}
+                              className="w-full bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm border border-slate-600 focus:border-slate-500 focus:ring-1 focus:ring-slate-500 font-mono text-right"
+                            />
+                          ) : (
+                            <span className="font-mono text-slate-200 text-sm block text-right">
+                              {hardwareWalletRequiredAbove != null && hardwareWalletRequiredAbove > 0 ? `$${hardwareWalletRequiredAbove}` : "—"}
+                            </span>
+                          )}
                         </td>
                         <td className="py-2 px-3 text-left w-24 font-mono text-xs text-slate-500">$10,000,000</td>
                       </tr>
