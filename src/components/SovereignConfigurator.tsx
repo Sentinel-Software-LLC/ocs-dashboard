@@ -14,6 +14,27 @@ const API_BASE = (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_ENG
 
 type DefensePosture = "CurrentSettings" | "ZeroTrust" | "CommunityTrust" | "Institutional" | "Custom";
 
+/** Stored in PolicyOverrides.listEnforcement; engine: Block = 403 when ToAddress matches that list type; Allow = risk signal only. */
+type ListEnforcementState = { blacklist: "block" | "allow"; graylist: "block" | "allow"; whitelist: "block" | "allow" };
+
+/** Community / Institutional presets: greylist is a risk signal only unless you set Block. */
+const DEFAULT_LIST_ENFORCEMENT: ListEnforcementState = {
+  blacklist: "block",
+  graylist: "allow",
+  whitelist: "allow",
+};
+
+/** Zero-Trust preset: greylist destinations get an immediate deny (same as blacklist) unless you switch to Allow. */
+const ZERO_TRUST_LIST_ENFORCEMENT: ListEnforcementState = {
+  blacklist: "block",
+  graylist: "block",
+  whitelist: "allow",
+};
+
+function listEnforcementForTrustProfileId(profileId: number): ListEnforcementState {
+  return profileId === 0 ? ZERO_TRUST_LIST_ENFORCEMENT : DEFAULT_LIST_ENFORCEMENT;
+}
+
 /** Order: Current Settings (read from DB), then presets, then Custom. Custom inherits from last selected preset. */
 const POSTURES: { id: DefensePosture; profileId: number | null; title: string; description: string }[] = [
   { id: "CurrentSettings", profileId: null, title: "Current Settings", description: "Read from database. Shows what is deployed for this address." },
@@ -40,6 +61,8 @@ interface SovereignConfiguratorProps {
   onExerciseSuccess?: () => void;
   /** When registry changes (e.g. after profile update), refetch current settings from API. */
   registry?: unknown[];
+  /** Increment after MVP auto-configure (seed) so Current Settings reloads even if registry reference is stable. */
+  registryRefreshVersion?: number;
   incidentSwitchEnabled?: boolean;
   incidentSwitchLoading?: boolean;
   onToggleIncidentSwitch?: () => void;
@@ -49,6 +72,7 @@ export default function SovereignConfigurator({
   targetAddress,
   onExerciseSuccess,
   registry,
+  registryRefreshVersion = 0,
   incidentSwitchEnabled = false,
   incidentSwitchLoading = false,
   onToggleIncidentSwitch,
@@ -64,6 +88,7 @@ export default function SovereignConfigurator({
   const [deploySuccess, setDeploySuccess] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
+    listEnforcement: true,
     trustRange: true,
     dust: true,
     peeling: true,
@@ -75,6 +100,7 @@ export default function SovereignConfigurator({
   const [policyTestsLoading, setPolicyTestsLoading] = useState(false);
   const [policyTestResults, setPolicyTestResults] = useState<{ outcome: string; expected: string; pass: boolean }[] | null>(null);
   const [toast, setToast] = useState<{ message: string; success: boolean } | null>(null);
+  const [listEnforcement, setListEnforcement] = useState<ListEnforcementState>(DEFAULT_LIST_ENFORCEMENT);
 
   useEffect(() => {
     if (!address.trim()) {
@@ -82,6 +108,7 @@ export default function SovereignConfigurator({
       setCurrentSettingsFromDb(fallback);
       setSelectedPosture("CurrentSettings");
       setSettings(fallback);
+      setListEnforcement(DEFAULT_LIST_ENFORCEMENT);
       return;
     }
     const loadEntry = async () => {
@@ -100,14 +127,25 @@ export default function SovereignConfigurator({
             const v = Number(raw);
             merged[s.key] = Number.isFinite(v) ? v : (preset[s.key] ?? s.min);
           }
-          let overrides: Record<string, number> = {};
+          let rawOverrides: Record<string, unknown> = {};
           try {
             const raw = entry.policyOverrides ?? entry.PolicyOverrides;
-            if (typeof raw === "string") overrides = JSON.parse(raw);
-            else if (raw && typeof raw === "object") overrides = raw as Record<string, number>;
+            if (typeof raw === "string") rawOverrides = JSON.parse(raw) as Record<string, unknown>;
+            else if (raw && typeof raw === "object") rawOverrides = raw as Record<string, unknown>;
           } catch { /* ignore */ }
           for (const s of POLICY_SETTINGS) {
-            if (overrides[s.key] != null) merged[s.key] = overrides[s.key];
+            const v = rawOverrides[s.key];
+            if (typeof v === "number" && Number.isFinite(v)) merged[s.key] = v;
+          }
+          const le = rawOverrides.listEnforcement as Record<string, string> | undefined;
+          if (le && typeof le === "object") {
+            setListEnforcement({
+              blacklist: le.blacklist === "allow" ? "allow" : "block",
+              graylist: le.graylist === "block" ? "block" : "allow",
+              whitelist: le.whitelist === "block" ? "block" : "allow",
+            });
+          } else {
+            setListEnforcement(listEnforcementForTrustProfileId(profile));
           }
           setCurrentSettingsFromDb(merged);
           setSettings(merged);
@@ -121,6 +159,7 @@ export default function SovereignConfigurator({
           setSettings(fallback);
           setHardwareWalletRequiredAbove(null);
           setIsCustomStored(false);
+          setListEnforcement(DEFAULT_LIST_ENFORCEMENT);
         }
       } catch {
         const fallback = getInitialSettings("CommunityTrust");
@@ -128,10 +167,11 @@ export default function SovereignConfigurator({
         setSelectedPosture("CurrentSettings");
         setSettings(fallback);
         setIsCustomStored(false);
+        setListEnforcement(DEFAULT_LIST_ENFORCEMENT);
       }
     };
     loadEntry();
-  }, [address, registry]);
+  }, [address, registry, registryRefreshVersion]);
 
   const runPolicyTests = async () => {
     if (!address.trim()) return;
@@ -183,7 +223,7 @@ export default function SovereignConfigurator({
     setDeployError(null);
     setDeploySuccess(false);
     if (selectedPosture === "CurrentSettings") {
-      setDeployError("Select a preset or Custom to deploy.");
+      setDeployError("Select a defense posture (Zero-Trust, Community-Trust, Institutional, or Custom), then deploy.");
       return;
     }
     const err = validate();
@@ -196,18 +236,20 @@ export default function SovereignConfigurator({
     try {
       const posture = POSTURES.find((p) => p.id === selectedPosture)!;
       if (posture.profileId == null) return;
-      const body: Record<string, unknown> = { trustProfile: posture.profileId };
-
-      if (selectedPosture === "Custom") {
-        body.sovereignCap = settings.sovereignCap;
-        body.sovereignCapWindowHours = settings.sovereignCapWindowHours;
-        body.maxRiskFloor = settings.maxRiskFloor;
-        body.blockThreshold = settings.blockThreshold;
-        body.minConfidenceCeiling = settings.minConfidenceCeiling;
-        body.policyOverrides = settings;
-        if (hardwareWalletRequiredAbove != null && hardwareWalletRequiredAbove > 0) {
-          body.hardwareWalletRequiredAbove = hardwareWalletRequiredAbove;
-        }
+      const body: Record<string, unknown> = {
+        trustProfile: posture.profileId,
+        sovereignCap: settings.sovereignCap,
+        sovereignCapWindowHours: settings.sovereignCapWindowHours,
+        maxRiskFloor: settings.maxRiskFloor,
+        blockThreshold: settings.blockThreshold,
+        minConfidenceCeiling: settings.minConfidenceCeiling,
+        policyOverrides: {
+          ...settings,
+          listEnforcement: { ...listEnforcement },
+        },
+      };
+      if (hardwareWalletRequiredAbove != null && hardwareWalletRequiredAbove > 0) {
+        body.hardwareWalletRequiredAbove = hardwareWalletRequiredAbove;
       }
 
       const res = await fetch(
@@ -219,12 +261,8 @@ export default function SovereignConfigurator({
         const data = await res.json().catch(() => ({}));
         throw new Error(data.message || `Request failed: ${res.status}`);
       }
-      // Update DB snapshot so Current Settings shows what we just deployed
-      if (selectedPosture === "Custom") {
-        setCurrentSettingsFromDb(settings);
-      } else {
-        setCurrentSettingsFromDb(getInitialSettings(selectedPosture));
-      }
+      setCurrentSettingsFromDb(settings);
+      setIsCustomStored(posture.profileId === 2);
       showToast("Sovereign Law Updated. Node .20 Synchronized.", true);
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Deploy failed.", false);
@@ -250,6 +288,7 @@ export default function SovereignConfigurator({
     setLastPresetSelected(p.id);
     setSelectedPosture(p.id);
     setSettings(getInitialSettings(p.id));
+    setListEnforcement(p.id === "ZeroTrust" ? ZERO_TRUST_LIST_ENFORCEMENT : DEFAULT_LIST_ENFORCEMENT);
     setHardwareWalletRequiredAbove(null);
   };
 
@@ -260,6 +299,21 @@ export default function SovereignConfigurator({
 
   const toggleSection = (key: string) => {
     setExpandedSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  /** Editable draft: any posture except read-only Current Settings (deployed snapshot). */
+  const canEditDraft = selectedPosture !== "CurrentSettings";
+
+  const resetDraftToPreset = () => {
+    if (selectedPosture === "CurrentSettings") return;
+    if (selectedPosture === "Custom") {
+      setSettings(getInitialSettings("Custom"));
+    } else {
+      setSettings(getInitialSettings(selectedPosture));
+    }
+    setListEnforcement({ ...DEFAULT_LIST_ENFORCEMENT });
+    setHardwareWalletRequiredAbove(null);
+    setDeployError(null);
   };
 
   const SECTION_GROUPS: { key: string; title: string; settings: PolicySettingDef[] }[] = [
@@ -344,14 +398,74 @@ export default function SovereignConfigurator({
       </div>
 
       <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50 space-y-4">
-        <p className="text-sm font-bold text-slate-400">
-          Policy Settings
-          {selectedPosture === "CurrentSettings" && " (from database — what is deployed)"}
-          {selectedPosture === "Custom" && " (editable)"}
-          {selectedPosture !== "CurrentSettings" && selectedPosture !== "Custom" && (
-            <span> ({POSTURES.find((x) => x.id === selectedPosture)?.title ?? selectedPosture} preset)</span>
+        <div className="space-y-1">
+          <p className="text-sm font-bold text-slate-400">
+            Policy Settings
+            {selectedPosture === "CurrentSettings" && " (from database — what is deployed)"}
+            {selectedPosture === "Custom" && " — draft (editable)"}
+            {selectedPosture !== "CurrentSettings" && selectedPosture !== "Custom" && (
+              <span> — {POSTURES.find((x) => x.id === selectedPosture)?.title ?? selectedPosture} draft (editable)</span>
+            )}
+          </p>
+          <p className="text-xs text-slate-500 font-normal font-sans leading-snug">
+            Choose a defense posture, adjust sliders and list rules as needed, then deploy. Numeric values and <code className="text-slate-400">listEnforcement</code> are stored in registry columns and <code className="text-slate-400">PolicyOverrides</code>.
+          </p>
+          {canEditDraft && (
+            <button
+              type="button"
+              onClick={resetDraftToPreset}
+              className="mt-2 text-xs font-bold px-3 py-1.5 rounded border border-slate-500 text-slate-300 hover:bg-slate-700/50"
+            >
+              Reset to preset
+            </button>
           )}
-        </p>
+        </div>
+
+        <div className="border border-slate-700 rounded-lg overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("listEnforcement")}
+            className="w-full px-4 py-2 text-left text-sm font-medium text-slate-300 bg-slate-800/50 hover:bg-slate-800"
+          >
+            {expandedSections.listEnforcement ? "▼" : "▶"} Registry list enforcement (ToAddress)
+          </button>
+          {expandedSections.listEnforcement && (
+            <div className="px-4 py-3 space-y-3 border-t border-slate-700/80 bg-slate-900/30">
+              <p className="text-xs text-slate-500">
+                Same policy document as the sliders below. When you send to a <strong>ToAddress</strong> on a registry list: <strong>Block</strong> = immediate deny;
+                <strong> Allow</strong> = no list-only deny — risk still runs (MFA / trust-range from your numeric settings). Whitelist <strong>Block</strong> is for testing unusual cases.{' '}
+                <strong className="text-slate-400">Zero-Trust</strong> defaults greylist to <strong className="text-slate-400">Block</strong>; Community / Institutional default greylist to <strong className="text-slate-400">Allow</strong> (signal only).
+              </p>
+              {(["blacklist", "graylist", "whitelist"] as const).map((key) => (
+                <div key={key} className="flex flex-wrap items-center justify-between gap-2 py-2 border-b border-slate-700/50 last:border-0">
+                  <span className="text-sm text-slate-300 capitalize">{key} destination</span>
+                  <div className="flex rounded-lg overflow-hidden border border-slate-600">
+                    {(["block", "allow"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        disabled={!canEditDraft}
+                        onClick={() => canEditDraft && setListEnforcement((prev) => ({ ...prev, [key]: mode }))}
+                        className={`px-3 py-1.5 text-xs font-bold capitalize ${
+                          listEnforcement[key] === mode
+                            ? mode === "block"
+                              ? "bg-red-900/50 text-red-200"
+                              : "bg-emerald-900/40 text-emerald-200"
+                            : "bg-slate-800 text-slate-400"
+                        } disabled:opacity-50 disabled:cursor-not-allowed`}
+                      >
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {!canEditDraft && (
+                <p className="text-xs text-amber-400/90">Select a <strong>defense posture</strong> (not Current Settings) to edit list rules.</p>
+              )}
+            </div>
+          )}
+        </div>
 
         {SECTION_GROUPS.map((group) => (
           <div key={group.key} className="border border-slate-700 rounded-lg overflow-hidden">
@@ -391,7 +505,7 @@ export default function SovereignConfigurator({
                         </td>
                         <td className="py-2 px-3 text-right w-24 font-mono text-xs text-slate-500">—</td>
                         <td className="py-2 px-3 w-28">
-                          {selectedPosture === "Custom" ? (
+                          {canEditDraft ? (
                             <div className="flex items-center gap-2 justify-end">
                               <button
                                 onClick={onToggleIncidentSwitch}
@@ -416,7 +530,7 @@ export default function SovereignConfigurator({
                         <td className="py-2 pr-4">
                           <div className="flex items-center gap-1 min-w-0">
                             <span className="text-slate-300 text-sm">Hardware Wallet Required Above</span>
-                            {address.toLowerCase().includes("test_trusted_partner") && selectedPosture === "Custom" && (
+                            {address.toLowerCase().includes("test_trusted_partner") && canEditDraft && (
                               <span className="ml-2 text-[10px] text-amber-400" title="Sovereign Cap must be ≥5000 for this scenario">MVP-2: Institutional→Custom, then 1000</span>
                             )}
                             <InfoTooltip
@@ -430,7 +544,7 @@ export default function SovereignConfigurator({
                         </td>
                         <td className="py-2 px-3 text-right w-24 font-mono text-xs text-slate-500">$0</td>
                         <td className="py-2 px-3 w-28">
-                          {selectedPosture === "Custom" ? (
+                          {canEditDraft ? (
                             <input
                               type="number"
                               min={0}
@@ -466,7 +580,7 @@ export default function SovereignConfigurator({
           disabled={deploying || selectedPosture === "CurrentSettings"}
           className="w-full bg-red-600 hover:bg-red-500 disabled:bg-slate-600 disabled:cursor-not-allowed px-6 py-3 rounded font-bold text-white transition-all"
         >
-          {deploying ? "Deploying…" : selectedPosture === "CurrentSettings" ? "Select a preset or Custom to deploy" : "Deploy Sovereign Law"}
+          {deploying ? "Deploying…" : selectedPosture === "CurrentSettings" ? "Select a defense posture to deploy" : "Deploy Sovereign Law"}
         </button>
         <p className="text-xs text-slate-500 mt-2 text-center">
           Updates the RegistryEntry in the database (in-memory when UseLocalDb, or PostgreSQL on Node .20).

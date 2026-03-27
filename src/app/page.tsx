@@ -2,7 +2,6 @@
 import { useState, useEffect } from 'react';
 import { getApiHeaders } from '@/lib/api';
 import type { RiskLog, ForensicDetails } from '@/types/risk';
-import { TRUST_PROFILES } from '@/types/risk';
 import SovereignConfigurator from '@/components/SovereignConfigurator';
 import AuditTab from '@/components/AuditTab';
 import { MVP1_SCENARIOS, statusToOutcome, matchLogToScenario, type Mvp1Scenario, type ScenarioOutcome } from '@/types/mvp1Scenarios';
@@ -102,6 +101,9 @@ const ENGINE_BASE = process.env.NEXT_PUBLIC_ENGINE_URL || 'http://localhost:5193
 const API_BASE = `${ENGINE_BASE}/api/PGTAIL`;
 const DIAGNOSTICS_BASE = `${ENGINE_BASE}/api/diagnostics`;
 
+const MVP_DEMO_REGISTRY_HINT =
+  'Runs use live Engine policy per scenario wallet. Optional: click “Auto-configure policy for MVP” first to reset demo registry rows and clear deploy overrides so Current Settings match the scripted MVP-1 table.';
+
 /** MVP-1 demo user's wallets. Label for display and purpose/description. */
 const MVP1_WALLET_INFO: Record<string, { label: string; purpose: string }> = {
   test_trusted_partner: { label: 'Trusted Partner (Primary)', purpose: 'Primary wallet for daily transactions and MVP-1 demo. Verified OCS partner.' },
@@ -120,6 +122,8 @@ export default function Home() {
   /** Selected wallet for policy config. Set from My Wallets or Registry Configure. */
   const [userAddress, setUserAddress] = useState('test_trusted_partner');
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  /** Bumped after MVP auto-configure (seed) so Policy Configurator reloads Current Settings from API. */
+  const [registryConfiguratorSync, setRegistryConfiguratorSync] = useState(0);
 
   /** MVP-1's connected wallets = whitelisted registry entries. Fallback to known addresses if registry empty. */
   const whitelisted = registry.filter((e) => e.entryType === 1);
@@ -200,21 +204,38 @@ export default function Home() {
     }
   };
 
-  const handleUpdateProfile = async (address: string, trustProfile: number) => {
-    const response = await fetch(`${API_BASE}/registry/${encodeURIComponent(address)}`, {
-      method: 'PATCH',
-      headers: { ...await getApiHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ trustProfile })
-    });
-    if (response.ok) await fetchRegistry();
-  };
-
   const [generating, setGenerating] = useState(false);
   const [generatingMvp2, setGeneratingMvp2] = useState(false);
   const [incidentSwitchEnabled, setIncidentSwitchEnabled] = useState(false);
   const [incidentSwitchLoading, setIncidentSwitchLoading] = useState(false);
   const [trafficResults, setTrafficResults] = useState<{ scenario: Mvp1Scenario; actual: ScenarioOutcome; pass: boolean }[] | null>(null);
   const [trafficResultsMvp2, setTrafficResultsMvp2] = useState<{ scenario: Mvp2Scenario; actual: ScenarioOutcome; pass: boolean }[] | null>(null);
+  /** MVP auto-configure (POST seed): optional; opening MVP alone does not call it. */
+  const [mvpAutoSeed, setMvpAutoSeed] = useState<{
+    phase: 'idle' | 'restoring' | 'ok' | 'error';
+    detail?: string;
+  }>({ phase: 'idle' });
+
+  const autoConfigurePolicyForMvp = async () => {
+    setMvpAutoSeed({ phase: 'restoring' });
+    setConnectionError(null);
+    try {
+      const res = await fetch(`${DIAGNOSTICS_BASE}/seed`, { method: 'POST', headers: await getApiHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchRegistry();
+      setRegistryConfiguratorSync((n) => n + 1);
+      setActiveTab('registryPolicy');
+      setMvpAutoSeed({
+        phase: 'ok',
+        detail:
+          'MVP demo policy applied: demo registry rows reset and PolicyOverrides cleared so Current Settings match what the MVP table expects. Review Registry & Policy for your wallet, then return here to run.',
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      setMvpAutoSeed({ phase: 'error', detail: msg });
+      setConnectionError(`Could not auto-configure policy for MVP: ${msg}`);
+    }
+  };
 
   const generateTraffic = async () => {
     setGenerating(true);
@@ -317,6 +338,14 @@ export default function Home() {
   useEffect(() => { if (activeTab === 'registryPolicy') fetchRegistry(); }, [activeTab]);
   useEffect(() => { if (loggedInUser === 'mvp1') fetchRegistry(); }, [loggedInUser]);
 
+  useEffect(() => {
+    if (selectedMvp === null) {
+      setMvpAutoSeed({ phase: 'idle' });
+      return;
+    }
+    setMvpAutoSeed({ phase: 'idle', detail: MVP_DEMO_REGISTRY_HINT });
+  }, [selectedMvp]);
+
   // Auto-refresh traffic every 5 seconds when on Live Traffic tab
   useEffect(() => {
     if (activeTab !== 'traffic') return;
@@ -387,6 +416,24 @@ export default function Home() {
         </div>
       </div>
 
+      {mvpAutoSeed.phase === 'ok' && mvpAutoSeed.detail && (
+        <div className="mb-4 p-3 rounded-lg border border-emerald-700/50 bg-emerald-900/20 text-emerald-100 text-sm flex justify-between items-start gap-4">
+          <span>✓ {mvpAutoSeed.detail}</span>
+          <button
+            type="button"
+            className="text-emerald-300/90 hover:text-white text-xs font-bold shrink-0"
+            onClick={() =>
+              setMvpAutoSeed({
+                phase: 'idle',
+                detail: selectedMvp != null ? MVP_DEMO_REGISTRY_HINT : undefined,
+              })
+            }
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {activeTab === 'registryPolicy' && (
         <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
           <h2 className="text-xl text-slate-300 underline underline-offset-8 mb-4">Registry & Policy Configurator</h2>
@@ -395,59 +442,34 @@ export default function Home() {
             <p className="text-slate-400 text-sm mb-3">Select a wallet. Policy applies when that wallet sends transactions.</p>
             {(() => {
               const walletOptions = registry.length >= 1 ? registry : myWallets;
-              const regEntry = registry.find((e) => e.hexAddress?.toLowerCase() === userAddress?.toLowerCase());
               const displayLabel = (e: { hexAddress: string; notes?: string }) =>
                 (e.notes?.trim() || MVP1_WALLET_INFO[e.hexAddress]?.label) ?? e.hexAddress;
               return (
-                <>
-                  <div className="flex flex-wrap items-center gap-4 mb-4 p-3 rounded-lg bg-slate-900/50 border border-slate-600">
-                    <div>
-                      <label className="block text-xs text-slate-500 mb-1">Wallet</label>
-                      <select
-                        value={userAddress}
-                        onChange={(e) => setUserAddress(e.target.value)}
-                        className="bg-slate-700 text-slate-200 px-3 py-2 rounded border border-slate-600 font-mono text-sm min-w-[14rem]"
-                      >
-                        {walletOptions.map((e) => (
-                          <option key={e.hexAddress} value={e.hexAddress}>
-                            {displayLabel(e)}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    {regEntry && (
-                      <>
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">Risk Profile</label>
-                          <select
-                            value={regEntry.trustProfile}
-                            onChange={(e) => handleUpdateProfile(regEntry.hexAddress, parseInt(e.target.value, 10))}
-                            className="bg-slate-700 text-slate-200 px-3 py-2 rounded border border-slate-600 text-sm"
-                          >
-                            {TRUST_PROFILES.map((p) => (
-                              <option key={p.value} value={p.value}>{p.label}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-1">Cap</label>
-                          <span className="text-slate-200 font-medium">${regEntry.sovereignCap ?? '—'}</span>
-                        </div>
-                        {regEntry.notes?.trim() && (
-                          <div>
-                            <label className="block text-xs text-slate-500 mb-1">Description</label>
-                            <span className="text-slate-200 font-medium">{regEntry.notes}</span>
-                          </div>
-                        )}
-                      </>
-                    )}
+                <div className="flex flex-wrap items-center gap-4 mb-4 p-3 rounded-lg bg-slate-900/50 border border-slate-600">
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">Wallet</label>
+                    <select
+                      value={userAddress}
+                      onChange={(e) => setUserAddress(e.target.value)}
+                      className="bg-slate-700 text-slate-200 px-3 py-2 rounded border border-slate-600 font-mono text-sm min-w-[14rem]"
+                    >
+                      {walletOptions.map((e) => (
+                        <option key={e.hexAddress} value={e.hexAddress}>
+                          {displayLabel(e)}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                </>
+                  <p className="text-xs text-slate-500 max-w-md self-end pb-1">
+                    Trust profile, cap, list rules, and sliders for this wallet are configured below in <strong>Policy Settings</strong> (defense posture + deploy).
+                  </p>
+                </div>
               );
             })()}
             <SovereignConfigurator
               targetAddress={userAddress}
               registry={registry}
+              registryRefreshVersion={registryConfiguratorSync}
               incidentSwitchEnabled={incidentSwitchEnabled}
               incidentSwitchLoading={incidentSwitchLoading}
               onToggleIncidentSwitch={toggleIncidentSwitch}
@@ -462,6 +484,8 @@ export default function Home() {
           diagnosticsBase={DIAGNOSTICS_BASE}
           selectedMvp={selectedMvp}
           setSelectedMvp={setSelectedMvp}
+          mvpAutoSeed={mvpAutoSeed}
+          autoConfigurePolicyForMvp={autoConfigurePolicyForMvp}
           trafficResults={trafficResults}
           setTrafficResults={setTrafficResults}
           trafficResultsMvp2={trafficResultsMvp2}

@@ -244,3 +244,35 @@ export function matchLogToScenario(
 
   return candidates[0];
 }
+
+/** Fields that match Manual Test / check-risk form (MVP-1 scenario → form). */
+export type ManualTestPreset = {
+  from: string;
+  to: string;
+  amount: string;
+  txType: string;
+  maxSlippage: string;
+  slippage: string;
+};
+
+function manualTestExtrasFromParams(params?: Record<string, unknown>): Pick<ManualTestPreset, 'txType' | 'maxSlippage' | 'slippage'> {
+  const p = params ?? {};
+  const str = (camel: string, pascal: string) => {
+    const v = p[pascal] ?? p[camel];
+    return v != null && v !== '' ? String(v) : '';
+  };
+  return {
+    txType: str('transactionType', 'TransactionType'),
+    maxSlippage: str('maxSlippagePercent', 'MaxSlippagePercent'),
+    slippage: str('slippagePercent', 'SlippagePercent'),
+  };
+}
+
+export function mvp1ScenarioToManualTestPreset(s: Mvp1Scenario): ManualTestPreset {
+  return {
+    from: s.from,
+    to: s.to,
+    amount: s.amount,
+    ...manualTestExtrasFromParams(s.params),
+  };
+}

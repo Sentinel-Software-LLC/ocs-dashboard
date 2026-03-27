@@ -1,8 +1,22 @@
 "use client";
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { getApiHeaders } from '@/lib/api';
+import type { ManualTestPreset } from '@/types/mvp1Scenarios';
 
-export default function CheckRiskForm({ apiBase, onSuccess }: { apiBase: string; onSuccess: () => void }) {
+export default function CheckRiskForm({
+  apiBase,
+  onSuccess,
+  presetVersion = 0,
+  preset = null,
+  presetLabel = null,
+}: {
+  apiBase: string;
+  onSuccess: () => void;
+  /** Increment when `preset` should be applied (e.g. MVP-1 result row click). */
+  presetVersion?: number;
+  preset?: ManualTestPreset | null;
+  presetLabel?: string | null;
+}) {
   const [from, setFrom] = useState('test_trusted_partner');
   const [to, setTo] = useState('test_mature_wallet');
   const [amount, setAmount] = useState('100');
@@ -11,6 +25,17 @@ export default function CheckRiskForm({ apiBase, onSuccess }: { apiBase: string;
   const [txType, setTxType] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!preset || presetVersion < 1) return;
+    setFrom(preset.from);
+    setTo(preset.to);
+    setAmount(preset.amount);
+    setTxType(preset.txType);
+    setMaxSlippage(preset.maxSlippage);
+    setSlippage(preset.slippage);
+    setResult(null);
+  }, [presetVersion, preset]);
 
   const handleSubmit = async () => {
     setLoading(true);
@@ -53,6 +78,12 @@ export default function CheckRiskForm({ apiBase, onSuccess }: { apiBase: string;
   };
 
   return (
+    <div className="space-y-2">
+      {presetLabel && presetVersion > 0 && (
+        <p className="text-xs text-slate-400">
+          Loaded from MVP-1 run: <span className="text-slate-300">{presetLabel}</span>
+        </p>
+      )}
     <div className="flex flex-wrap items-end gap-4">
       <div>
         <label className="block text-xs text-slate-500 mb-1">From</label>
@@ -86,6 +117,7 @@ export default function CheckRiskForm({ apiBase, onSuccess }: { apiBase: string;
         {loading ? '…' : 'Check Risk'}
       </button>
       {result && <span className="text-sm text-slate-300">{result}</span>}
+    </div>
     </div>
   );
 }
