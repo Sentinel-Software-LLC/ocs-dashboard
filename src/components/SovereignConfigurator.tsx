@@ -17,6 +17,70 @@ type DefensePosture = "CurrentSettings" | "ZeroTrust" | "CommunityTrust" | "Inst
 /** Stored in PolicyOverrides.listEnforcement; engine: Block = 403 when ToAddress matches that list type; Allow = risk signal only. */
 type ListEnforcementState = { blacklist: "block" | "allow"; graylist: "block" | "allow"; whitelist: "block" | "allow" };
 
+/** HC2: Per-vault transaction guard sensitivity. false = guard fires (default); true = guard bypassed. */
+type GuardOverridesState = {
+  allowApprovalDrainer: boolean;
+  allowPermitDrainer: boolean;
+  allowDrainerAddress: boolean;
+  allowBridgeMismatch: boolean;
+  allowTokenImpersonation: boolean;
+  allowSlippageExceedance: boolean;
+};
+const DEFAULT_GUARD_OVERRIDES: GuardOverridesState = {
+  allowApprovalDrainer: false,
+  allowPermitDrainer: false,
+  allowDrainerAddress: false,
+  allowBridgeMismatch: false,
+  allowTokenImpersonation: false,
+  allowSlippageExceedance: false,
+};
+
+/** Definitions for each guard toggle — rendered in the Transaction Guard Sensitivity section. */
+const GUARD_CONTROLS: { key: keyof GuardOverridesState; id: string; label: string; description: string; risk: string }[] = [
+  {
+    key: "allowApprovalDrainer",
+    id: "H1",
+    label: "Approval Drainer Guard",
+    description: "Blocks token approvals to known drainer contracts, or unlimited approvals. Applies to TransactionType=approval.",
+    risk: "Drainer contracts can drain your entire token balance via an unlimited approval.",
+  },
+  {
+    key: "allowPermitDrainer",
+    id: "H2",
+    label: "Permit Signature Guard",
+    description: "Blocks EIP-2612 permit signatures to known drainer contracts or with unlimited amounts. Applies to TransactionType=permit.",
+    risk: "Permit signatures are gasless approvals — a malicious permit can be exploited off-chain without a follow-up tx.",
+  },
+  {
+    key: "allowDrainerAddress",
+    id: "H3",
+    label: "Known Drainer Address",
+    description: "Blocks transactions to addresses on the known drainer contract blocklist. The brain still scores the address at high risk — you may also need to raise Block Threshold to proceed.",
+    risk: "Known drainer contracts are confirmed theft vectors. This is the highest-risk guard to bypass.",
+  },
+  {
+    key: "allowBridgeMismatch",
+    id: "J1",
+    label: "Bridge Chain Validation",
+    description: "Blocks bridge transactions where the destination chain ID does not match the expected chain ID. Applies to TransactionType=bridge.",
+    risk: "Chain ID mismatches indicate a bridge redirect attack — funds sent to the wrong chain are typically unrecoverable.",
+  },
+  {
+    key: "allowTokenImpersonation",
+    id: "K1",
+    label: "Token Impersonation Guard",
+    description: "Blocks transactions involving token contract addresses on the drainer blocklist.",
+    risk: "Fake tokens can impersonate legitimate assets and execute malicious logic on approval or transfer.",
+  },
+  {
+    key: "allowSlippageExceedance",
+    id: "I2",
+    label: "Slippage Guard",
+    description: "Blocks DEX swaps where the actual slippage percent exceeds your configured maximum. Applies to TransactionType=dex_swap.",
+    risk: "High slippage on swaps can cause significant value loss, often the result of sandwich attacks.",
+  },
+];
+
 
 /** Per-posture minimum inbound tx threshold defaults (USD). Null = disabled.
  *  Dusting is typically $0.001–$0.10. Threshold sits just above real dust,
@@ -103,7 +167,10 @@ export default function SovereignConfigurator({
     trustRange: true,
     dust: true,
     peeling: true,
+    guards: false,
   });
+  /** HC2: Per-vault guard overrides — false = guard active (default, fail-closed). */
+  const [guardOverrides, setGuardOverrides] = useState<GuardOverridesState>({ ...DEFAULT_GUARD_OVERRIDES });
   /** Inbound dust protection: MFA required when inbound amount is below this USD threshold. Null/0 = disabled. */
   const [inboundDustThresholdUsd, setInboundDustThresholdUsd] = useState<number | null>(null);
   /** B1: Amount (USD) above which hardware wallet is required. Null/0 = no requirement. Custom posture only. */
@@ -162,6 +229,19 @@ export default function SovereignConfigurator({
           }
           const dt = rawOverrides.inboundDustThresholdUsd;
           setInboundDustThresholdUsd(typeof dt === "number" && dt > 0 ? dt : null);
+          const guardsRaw = rawOverrides.guards as Record<string, boolean> | undefined;
+          if (guardsRaw && typeof guardsRaw === "object") {
+            setGuardOverrides({
+              allowApprovalDrainer: guardsRaw.allowApprovalDrainer === true,
+              allowPermitDrainer: guardsRaw.allowPermitDrainer === true,
+              allowDrainerAddress: guardsRaw.allowDrainerAddress === true,
+              allowBridgeMismatch: guardsRaw.allowBridgeMismatch === true,
+              allowTokenImpersonation: guardsRaw.allowTokenImpersonation === true,
+              allowSlippageExceedance: guardsRaw.allowSlippageExceedance === true,
+            });
+          } else {
+            setGuardOverrides({ ...DEFAULT_GUARD_OVERRIDES });
+          }
           setCurrentSettingsFromDb(merged);
           setSettings(merged);
           setHardwareWalletRequiredAbove(entry.hardwareWalletRequiredAbove != null ? Number(entry.hardwareWalletRequiredAbove) : null);
@@ -176,6 +256,7 @@ export default function SovereignConfigurator({
           setIsCustomStored(false);
           setListEnforcement(DEFAULT_LIST_ENFORCEMENT);
           setInboundDustThresholdUsd(null);
+          setGuardOverrides({ ...DEFAULT_GUARD_OVERRIDES });
         }
       } catch {
         const fallback = getInitialSettings("CommunityTrust");
@@ -185,6 +266,7 @@ export default function SovereignConfigurator({
         setIsCustomStored(false);
         setListEnforcement(DEFAULT_LIST_ENFORCEMENT);
         setInboundDustThresholdUsd(null);
+        setGuardOverrides({ ...DEFAULT_GUARD_OVERRIDES });
       }
     };
     loadEntry();
@@ -266,6 +348,10 @@ export default function SovereignConfigurator({
           ...(inboundDustThresholdUsd != null && inboundDustThresholdUsd > 0
             ? { inboundDustThresholdUsd }
             : {}),
+          // Only include guards object when at least one guard is bypassed (keeps JSON clean)
+          ...(Object.values(guardOverrides).some(Boolean)
+            ? { guards: { ...guardOverrides } }
+            : {}),
         },
       };
       if (hardwareWalletRequiredAbove != null && hardwareWalletRequiredAbove > 0) {
@@ -311,6 +397,7 @@ export default function SovereignConfigurator({
     setListEnforcement(p.id === "ZeroTrust" ? ZERO_TRUST_LIST_ENFORCEMENT : DEFAULT_LIST_ENFORCEMENT);
     setInboundDustThresholdUsd(POSTURE_DUST_THRESHOLDS[p.id] ?? null);
     setHardwareWalletRequiredAbove(null);
+    setGuardOverrides({ ...DEFAULT_GUARD_OVERRIDES }); // Guards always start fail-closed on posture switch
   };
 
   const setSetting = (key: string, value: number) => {
@@ -335,6 +422,7 @@ export default function SovereignConfigurator({
     setListEnforcement({ ...DEFAULT_LIST_ENFORCEMENT });
     setInboundDustThresholdUsd(POSTURE_DUST_THRESHOLDS[selectedPosture] ?? null);
     setHardwareWalletRequiredAbove(null);
+    setGuardOverrides({ ...DEFAULT_GUARD_OVERRIDES });
     setDeployError(null);
   };
 
@@ -633,6 +721,79 @@ export default function SovereignConfigurator({
             )}
           </div>
         ))}
+        {/* HC2: Transaction Guard Sensitivity */}
+        <div className="border border-slate-700 rounded-lg overflow-hidden">
+          <button
+            type="button"
+            onClick={() => toggleSection("guards")}
+            className="w-full px-4 py-2 text-left text-sm font-medium text-slate-300 bg-slate-800/50 hover:bg-slate-800"
+          >
+            {expandedSections.guards ? "▼" : "▶"} Transaction Guard Sensitivity
+            {Object.values(guardOverrides).some(Boolean) && (
+              <span className="ml-2 text-xs font-bold text-amber-400">
+                {Object.values(guardOverrides).filter(Boolean).length} bypassed
+              </span>
+            )}
+          </button>
+          {expandedSections.guards && (
+            <div className="px-4 py-3 space-y-1 border-t border-slate-700/80 bg-slate-900/30">
+              <p className="text-xs text-slate-500 mb-3">
+                Each guard is a hard pre-check that fires before trust-range evaluation. <strong>Active</strong> = guard
+                fires (recommended default). <strong>Bypass</strong> = guard is skipped — the transaction proceeds to
+                your trust-range settings. You remain in full control; the system advises, not vetoes.
+              </p>
+              {GUARD_CONTROLS.map((g) => {
+                const bypassed = guardOverrides[g.key];
+                return (
+                  <div
+                    key={g.key}
+                    className={`py-3 border-b border-slate-700/50 last:border-0 ${bypassed ? "bg-amber-950/20 -mx-4 px-4 rounded" : ""}`}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold text-slate-500 bg-slate-800 px-1.5 py-0.5 rounded font-mono">{g.id}</span>
+                          <span className="text-sm font-medium text-slate-300">{g.label}</span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-1 leading-snug">{g.description}</p>
+                        {bypassed && (
+                          <p className="text-xs text-amber-400/90 mt-1 leading-snug">
+                            ⚠ Risk accepted: {g.risk}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex rounded-lg overflow-hidden border border-slate-600 shrink-0">
+                        {([false, true] as const).map((val) => (
+                          <button
+                            key={String(val)}
+                            type="button"
+                            disabled={!canEditDraft}
+                            onClick={() =>
+                              canEditDraft &&
+                              setGuardOverrides((prev) => ({ ...prev, [g.key]: val }))
+                            }
+                            className={`px-3 py-1.5 text-xs font-bold ${
+                              guardOverrides[g.key] === val
+                                ? val === false
+                                  ? "bg-emerald-900/50 text-emerald-200"
+                                  : "bg-amber-900/50 text-amber-200"
+                                : "bg-slate-800 text-slate-400"
+                            } disabled:opacity-50 disabled:cursor-not-allowed`}
+                          >
+                            {val === false ? "Active" : "Bypass"}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {!canEditDraft && (
+                <p className="text-xs text-amber-400/90 mt-2">Select a <strong>defense posture</strong> (not Current Settings) to edit guard sensitivity.</p>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       <div>
