@@ -25,6 +25,7 @@ type GuardOverridesState = {
   allowBridgeMismatch: boolean;
   allowTokenImpersonation: boolean;
   allowSlippageExceedance: boolean;
+  allowVirginWallet: boolean;
 };
 const DEFAULT_GUARD_OVERRIDES: GuardOverridesState = {
   allowApprovalDrainer: false,
@@ -33,6 +34,7 @@ const DEFAULT_GUARD_OVERRIDES: GuardOverridesState = {
   allowBridgeMismatch: false,
   allowTokenImpersonation: false,
   allowSlippageExceedance: false,
+  allowVirginWallet: false,
 };
 
 /** Definitions for each guard toggle — plain-English, TurboTax-style. */
@@ -72,6 +74,12 @@ const GUARD_CONTROLS: { key: keyof GuardOverridesState; label: string; descripti
     label: "Trade slippage limit",
     description: "You're getting back less from this trade than you set as your acceptable limit. This can happen naturally in volatile markets or during a sandwich attack.",
     risk: "You may receive significantly less than expected on this trade.",
+  },
+  {
+    key: "allowVirginWallet",
+    label: "Recipient has no transaction history",
+    description: "The address you're sending to has never sent or received a transaction. This could be a brand-new wallet — or a one-time trap set up just to receive your funds.",
+    risk: "Sending to an unestablished address is higher risk — if you didn't create this wallet yourself, proceed with caution.",
   },
 ];
 
@@ -161,7 +169,7 @@ export default function SovereignConfigurator({
     trustRange: true,
     dust: true,
     peeling: true,
-    guards: false,
+    guards: true,
   });
   /** HC2: Per-vault guard overrides — false = guard active (default, fail-closed). */
   const [guardOverrides, setGuardOverrides] = useState<GuardOverridesState>({ ...DEFAULT_GUARD_OVERRIDES });
@@ -232,6 +240,7 @@ export default function SovereignConfigurator({
               allowBridgeMismatch: guardsRaw.allowBridgeMismatch === true,
               allowTokenImpersonation: guardsRaw.allowTokenImpersonation === true,
               allowSlippageExceedance: guardsRaw.allowSlippageExceedance === true,
+              allowVirginWallet: guardsRaw.allowVirginWallet === true,
             });
           } else {
             setGuardOverrides({ ...DEFAULT_GUARD_OVERRIDES });
