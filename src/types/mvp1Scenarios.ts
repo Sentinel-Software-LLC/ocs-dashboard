@@ -176,8 +176,8 @@ export const MVP1_SCENARIOS: Mvp1Scenario[] = [
     from: '0xUnknown_New_User',
     to: 'test_mature_wallet',
     amount: '10',
-    expected: 'BLOCKED',
-    settingsNote: 'FromAddress not in registry',
+    expected: 'APPROVED',
+    settingsNote: 'Advisory-first: unknown sender is not blocked. System advises, user decides.',
   },
   // H3 Drainer — 2 extremes
   {
