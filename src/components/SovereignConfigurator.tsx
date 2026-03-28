@@ -18,12 +18,14 @@ type DefensePosture = "CurrentSettings" | "ZeroTrust" | "CommunityTrust" | "Inst
 type ListEnforcementState = { blacklist: "block" | "allow"; graylist: "block" | "allow"; whitelist: "block" | "allow" };
 
 
-/** Per-posture inbound dust threshold defaults (USD). Null = disabled. */
+/** Per-posture inbound dust threshold defaults (USD). Null = disabled.
+ *  Dust is typically $0.001–$0.10. Threshold sits just above real dust,
+ *  well below any legitimate small payment. */
 const POSTURE_DUST_THRESHOLDS: Partial<Record<DefensePosture, number | null>> = {
-  ZeroTrust:     5,    // $5 — maximum vigilance; flag any micro-inbound
-  CommunityTrust: 1,   // $1 — covers 95%+ of real dust attacks ($0.001–$0.50 typical)
-  Institutional:  2,   // $2 — high-value target; slight headroom for legit small flows
-  Custom:         null, // user-defined from scratch
+  ZeroTrust:      0.50,  // $0.50 — catches all typical dust including XRP/XLM micro-drops
+  CommunityTrust: 0.10,  // $0.10 — covers BTC/ETH/SOL dust range without flagging real small payments
+  Institutional:  0.25,  // $0.25 — slightly above ETH token dust; institutional wallets are higher-value targets
+  Custom:         null,  // user-defined from scratch
 };
 
 /** Community / Institutional presets: greylist is a risk signal only unless you set Block. */
@@ -594,9 +596,9 @@ export default function SovereignConfigurator({
                             <InfoTooltip
                               title="Inbound Dust Threshold"
                               description="Inbound transactions below this USD amount from unregistered addresses trigger MFA review. Protects against dusting attacks that de-anonymize your wallet. 0 or empty = disabled."
-                              zeroTrust="$5 default — flag any micro-inbound (maximum vigilance)."
-                              communityTrust="$1 default — covers 95%+ of real dust attacks ($0.001–$0.50 typical)."
-                              whereUsed="CheckRisk returns MFA_REQUIRED when inbound amount is below threshold. Institutional default: $2."
+                              zeroTrust="$0.50 default — catches all dust including XRP/XLM micro-drops."
+                              communityTrust="$0.10 default — covers BTC/ETH/SOL dust range; well below any real small payment."
+                              whereUsed="CheckRisk returns MFA_REQUIRED when inbound amount is below threshold. Institutional default: $0.25. Dust is typically $0.001–$0.10."
                             />
                           </div>
                         </td>
