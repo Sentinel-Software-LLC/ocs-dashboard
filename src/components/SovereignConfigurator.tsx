@@ -18,11 +18,11 @@ type DefensePosture = "CurrentSettings" | "ZeroTrust" | "CommunityTrust" | "Inst
 type ListEnforcementState = { blacklist: "block" | "allow"; graylist: "block" | "allow"; whitelist: "block" | "allow" };
 
 
-/** Per-posture inbound dust threshold defaults (USD). Null = disabled.
- *  Dust is typically $0.001–$0.10. Threshold sits just above real dust,
+/** Per-posture minimum inbound tx threshold defaults (USD). Null = disabled.
+ *  Dusting is typically $0.001–$0.10. Threshold sits just above real dust,
  *  well below any legitimate small payment. */
 const POSTURE_DUST_THRESHOLDS: Partial<Record<DefensePosture, number | null>> = {
-  ZeroTrust:      0.50,  // $0.50 — catches all typical dust including XRP/XLM micro-drops
+  ZeroTrust:      1.00,  // $1.00 — maximum vigilance; flags anything under a dollar
   CommunityTrust: 0.10,  // $0.10 — covers BTC/ETH/SOL dust range without flagging real small payments
   Institutional:  0.25,  // $0.25 — slightly above ETH token dust; institutional wallets are higher-value targets
   Custom:         null,  // user-defined from scratch
@@ -592,13 +592,13 @@ export default function SovereignConfigurator({
                       <tr className="border-b border-slate-700/50">
                         <td className="py-2 pr-4">
                           <div className="flex items-center gap-1 min-w-0">
-                            <span className="text-slate-300 text-sm">Inbound Dust Threshold</span>
+                            <span className="text-slate-300 text-sm">Min. Inbound Amount</span>
                             <InfoTooltip
-                              title="Inbound Dust Threshold"
-                              description="Inbound transactions below this USD amount from unregistered addresses trigger MFA review. Protects against dusting attacks that de-anonymize your wallet. 0 or empty = disabled."
-                              zeroTrust="$0.50 default — catches all dust including XRP/XLM micro-drops."
-                              communityTrust="$0.10 default — covers BTC/ETH/SOL dust range; well below any real small payment."
-                              whereUsed="CheckRisk returns MFA_REQUIRED when inbound amount is below threshold. Institutional default: $0.25. Dust is typically $0.001–$0.10."
+                              title="Minimum Inbound Transaction Amount"
+                              description="Inbound transactions from unregistered addresses below this amount trigger MFA review. Prevents dusting attacks — micro-deposits used to de-anonymize your wallet by forcing on-chain correlation. Leave empty to disable."
+                              zeroTrust="$1.00 default — flags anything under a dollar (maximum vigilance)."
+                              communityTrust="$0.10 default — covers typical BTC/ETH/SOL dust range; well below any real small payment."
+                              whereUsed="CheckRisk returns MFA_REQUIRED when inbound amount is below threshold. Institutional default: $0.25. Real dusting is typically $0.001–$0.10."
                             />
                           </div>
                         </td>
@@ -608,7 +608,7 @@ export default function SovereignConfigurator({
                             <input
                               type="number"
                               min={0}
-                              max={10_000}
+                              max={10}
                               step={0.01}
                               value={inboundDustThresholdUsd ?? ""}
                               placeholder="Disabled"
@@ -624,7 +624,7 @@ export default function SovereignConfigurator({
                             </span>
                           )}
                         </td>
-                        <td className="py-2 px-3 text-left w-24 font-mono text-xs text-slate-500">$10,000</td>
+                        <td className="py-2 px-3 text-left w-24 font-mono text-xs text-slate-500">$10</td>
                       </tr>
                     )}
                   </tbody>
