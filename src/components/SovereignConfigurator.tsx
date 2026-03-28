@@ -17,30 +17,6 @@ type DefensePosture = "CurrentSettings" | "ZeroTrust" | "CommunityTrust" | "Inst
 /** Stored in PolicyOverrides.listEnforcement; engine: Block = 403 when ToAddress matches that list type; Allow = risk signal only. */
 type ListEnforcementState = { blacklist: "block" | "allow"; graylist: "block" | "allow"; whitelist: "block" | "allow" };
 
-/** Stored in PolicyOverrides.inbound; engine reads via InboundPolicyResolver. All default false (fail-closed). */
-type InboundPolicyState = {
-  allowFromUnknown: boolean;
-  allowFromDrainer: boolean;
-  allowFromTheft: boolean;
-  allowFromBlacklist: boolean;
-  allowFromPeeling: boolean;
-};
-
-const DEFAULT_INBOUND_POLICY: InboundPolicyState = {
-  allowFromUnknown: false,
-  allowFromDrainer: false,
-  allowFromTheft: false,
-  allowFromBlacklist: false,
-  allowFromPeeling: false,
-};
-
-const INBOUND_CONTROLS: { key: keyof InboundPolicyState; label: string; description: string; featureId: string }[] = [
-  { key: "allowFromUnknown",   label: "Allow From Unknown",   featureId: "E4", description: "Permit inbound from addresses not in your registry. When blocked, unregistered senders cannot reach this wallet." },
-  { key: "allowFromDrainer",   label: "Allow From Drainer",   featureId: "H3", description: "Permit inbound from drainer-flagged contracts. When blocked, known drainer addresses cannot send to this wallet." },
-  { key: "allowFromTheft",     label: "Allow From Theft",     featureId: "—",  description: "Permit inbound from addresses associated with theft events. When blocked, theft-flagged sources are denied." },
-  { key: "allowFromBlacklist", label: "Allow From Blacklist", featureId: "B2", description: "Permit inbound from globally blacklisted addresses. When blocked, blacklisted senders cannot reach this wallet." },
-  { key: "allowFromPeeling",   label: "Allow From Peeling",   featureId: "E6", description: "Permit inbound from addresses with active peeling-chain patterns. When blocked, layering sources are denied." },
-];
 
 /** Community / Institutional presets: greylist is a risk signal only unless you set Block. */
 const DEFAULT_LIST_ENFORCEMENT: ListEnforcementState = {
@@ -114,12 +90,12 @@ export default function SovereignConfigurator({
   const [deployError, setDeployError] = useState<string | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     listEnforcement: true,
-    inboundPolicy: true,
     trustRange: true,
     dust: true,
     peeling: true,
   });
-  const [inboundPolicy, setInboundPolicy] = useState<InboundPolicyState>(DEFAULT_INBOUND_POLICY);
+  /** Inbound dust protection: MFA required when inbound amount is below this USD threshold. Null/0 = disabled. */
+  const [inboundDustThresholdUsd, setInboundDustThresholdUsd] = useState<number | null>(null);
   /** B1: Amount (USD) above which hardware wallet is required. Null/0 = no requirement. Custom posture only. */
   const [hardwareWalletRequiredAbove, setHardwareWalletRequiredAbove] = useState<number | null>(null);
   /** True when DB has Custom (profile 2) for this address — enables Generate Policy Tests. */
@@ -174,18 +150,8 @@ export default function SovereignConfigurator({
           } else {
             setListEnforcement(listEnforcementForTrustProfileId(profile));
           }
-          const ib = rawOverrides.inbound as Record<string, unknown> | undefined;
-          if (ib && typeof ib === "object") {
-            setInboundPolicy({
-              allowFromUnknown:   ib.allowFromUnknown   === true,
-              allowFromDrainer:   ib.allowFromDrainer   === true,
-              allowFromTheft:     ib.allowFromTheft     === true,
-              allowFromBlacklist: ib.allowFromBlacklist === true,
-              allowFromPeeling:   ib.allowFromPeeling   === true,
-            });
-          } else {
-            setInboundPolicy(DEFAULT_INBOUND_POLICY);
-          }
+          const dt = rawOverrides.inboundDustThresholdUsd;
+          setInboundDustThresholdUsd(typeof dt === "number" && dt > 0 ? dt : null);
           setCurrentSettingsFromDb(merged);
           setSettings(merged);
           setHardwareWalletRequiredAbove(entry.hardwareWalletRequiredAbove != null ? Number(entry.hardwareWalletRequiredAbove) : null);
@@ -199,7 +165,7 @@ export default function SovereignConfigurator({
           setHardwareWalletRequiredAbove(null);
           setIsCustomStored(false);
           setListEnforcement(DEFAULT_LIST_ENFORCEMENT);
-          setInboundPolicy(DEFAULT_INBOUND_POLICY);
+          setInboundDustThresholdUsd(null);
         }
       } catch {
         const fallback = getInitialSettings("CommunityTrust");
@@ -208,7 +174,7 @@ export default function SovereignConfigurator({
         setSettings(fallback);
         setIsCustomStored(false);
         setListEnforcement(DEFAULT_LIST_ENFORCEMENT);
-        setInboundPolicy(DEFAULT_INBOUND_POLICY);
+        setInboundDustThresholdUsd(null);
       }
     };
     loadEntry();
@@ -287,7 +253,9 @@ export default function SovereignConfigurator({
         policyOverrides: {
           ...settings,
           listEnforcement: { ...listEnforcement },
-          inbound: { ...inboundPolicy },
+          ...(inboundDustThresholdUsd != null && inboundDustThresholdUsd > 0
+            ? { inboundDustThresholdUsd }
+            : {}),
         },
       };
       if (hardwareWalletRequiredAbove != null && hardwareWalletRequiredAbove > 0) {
@@ -331,7 +299,7 @@ export default function SovereignConfigurator({
     setSelectedPosture(p.id);
     setSettings(getInitialSettings(p.id));
     setListEnforcement(p.id === "ZeroTrust" ? ZERO_TRUST_LIST_ENFORCEMENT : DEFAULT_LIST_ENFORCEMENT);
-    setInboundPolicy({ ...DEFAULT_INBOUND_POLICY });
+    setInboundDustThresholdUsd(null);
     setHardwareWalletRequiredAbove(null);
   };
 
@@ -355,7 +323,7 @@ export default function SovereignConfigurator({
       setSettings(getInitialSettings(selectedPosture));
     }
     setListEnforcement({ ...DEFAULT_LIST_ENFORCEMENT });
-    setInboundPolicy({ ...DEFAULT_INBOUND_POLICY });
+    setInboundDustThresholdUsd(null);
     setHardwareWalletRequiredAbove(null);
     setDeployError(null);
   };
@@ -511,70 +479,6 @@ export default function SovereignConfigurator({
           )}
         </div>
 
-        <div className="border border-slate-700 rounded-lg overflow-hidden">
-          <button
-            type="button"
-            onClick={() => toggleSection("inboundPolicy")}
-            className="w-full px-4 py-2 text-left text-sm font-medium text-slate-300 bg-slate-800/50 hover:bg-slate-800"
-          >
-            {expandedSections.inboundPolicy ? "▼" : "▶"} Inbound Policy (FromAddress)
-          </button>
-          {expandedSections.inboundPolicy && (
-            <div className="px-4 py-3 space-y-3 border-t border-slate-700/80 bg-slate-900/30">
-              <p className="text-xs text-slate-500">
-                Controls whether this wallet accepts inbound transactions from specific sender categories.{" "}
-                <strong>Block</strong> = immediate deny when a matching <em>FromAddress</em> pattern is detected;{" "}
-                <strong>Allow</strong> = inbound permitted (outbound risk scoring still applies).{" "}
-                All defaults are <strong className="text-slate-400">Block</strong> (fail-closed). Toggle to <strong className="text-slate-400">Allow</strong> only when you have a reason to accept that sender type.
-              </p>
-              {INBOUND_CONTROLS.map(({ key, label, description, featureId }) => (
-                <div key={key} className="flex flex-wrap items-start justify-between gap-2 py-2 border-b border-slate-700/50 last:border-0">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-sm text-slate-300">{label}</span>
-                      {featureId !== "—" && (
-                        <span className="text-[10px] font-mono text-slate-500 bg-slate-800 px-1 rounded">{featureId}</span>
-                      )}
-                      <InfoTooltip
-                        title={label}
-                        description={description}
-                        zeroTrust="Block (fail-closed default)"
-                        communityTrust="Block (fail-closed default)"
-                        whereUsed="InboundPolicyResolver — checked before outbound risk scoring."
-                      />
-                    </div>
-                  </div>
-                  <div className="flex rounded-lg overflow-hidden border border-slate-600">
-                    {(["block", "allow"] as const).map((mode) => {
-                      const isActive = mode === "allow" ? inboundPolicy[key] : !inboundPolicy[key];
-                      return (
-                        <button
-                          key={mode}
-                          type="button"
-                          disabled={!canEditDraft}
-                          onClick={() => canEditDraft && setInboundPolicy((prev) => ({ ...prev, [key]: mode === "allow" }))}
-                          className={`px-3 py-1.5 text-xs font-bold capitalize ${
-                            isActive
-                              ? mode === "block"
-                                ? "bg-red-900/50 text-red-200"
-                                : "bg-emerald-900/40 text-emerald-200"
-                              : "bg-slate-800 text-slate-400"
-                          } disabled:opacity-50 disabled:cursor-not-allowed`}
-                        >
-                          {mode}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-              {!canEditDraft && (
-                <p className="text-xs text-amber-400/90">Select a <strong>defense posture</strong> (not Current Settings) to edit inbound policy.</p>
-              )}
-            </div>
-          )}
-        </div>
-
         {SECTION_GROUPS.map((group) => (
           <div key={group.key} className="border border-slate-700 rounded-lg overflow-hidden">
             <button
@@ -672,6 +576,45 @@ export default function SovereignConfigurator({
                           )}
                         </td>
                         <td className="py-2 px-3 text-left w-24 font-mono text-xs text-slate-500">$10,000,000</td>
+                      </tr>
+                    )}
+                    {group.key === "trustRange" && (
+                      <tr className="border-b border-slate-700/50">
+                        <td className="py-2 pr-4">
+                          <div className="flex items-center gap-1 min-w-0">
+                            <span className="text-slate-300 text-sm">Inbound Dust Threshold</span>
+                            <InfoTooltip
+                              title="Inbound Dust Threshold"
+                              description="Inbound transactions below this USD amount from unregistered addresses trigger MFA review. Protects against dusting attacks that de-anonymize your wallet. 0 or empty = disabled."
+                              zeroTrust="Set low (e.g. $0.10) to flag all micro-inbound."
+                              communityTrust="Optional; e.g. $1.00 to catch common dust amounts."
+                              whereUsed="CheckRisk returns MFA_REQUIRED when inbound amount is below threshold."
+                            />
+                          </div>
+                        </td>
+                        <td className="py-2 px-3 text-right w-24 font-mono text-xs text-slate-500">$0</td>
+                        <td className="py-2 px-3 w-28">
+                          {canEditDraft ? (
+                            <input
+                              type="number"
+                              min={0}
+                              max={10_000}
+                              step={0.01}
+                              value={inboundDustThresholdUsd ?? ""}
+                              placeholder="Disabled"
+                              onChange={(e) => {
+                                const v = e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0);
+                                setInboundDustThresholdUsd(v);
+                              }}
+                              className="w-full bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm border border-slate-600 focus:border-slate-500 focus:ring-1 focus:ring-slate-500 font-mono text-right"
+                            />
+                          ) : (
+                            <span className="font-mono text-slate-200 text-sm block text-right">
+                              {inboundDustThresholdUsd != null && inboundDustThresholdUsd > 0 ? `$${inboundDustThresholdUsd}` : "—"}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 text-left w-24 font-mono text-xs text-slate-500">$10,000</td>
                       </tr>
                     )}
                   </tbody>
