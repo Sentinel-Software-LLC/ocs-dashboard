@@ -170,7 +170,7 @@ export default function AuditTab(props: AuditTabProps) {
           </div>
           <div id="mvp2-demo" className="space-y-4 scroll-mt-4 border-t border-slate-700 pt-8">
             <p className="font-bold text-lg text-amber-400">MVP-2 — Enterprise Guard</p>
-            <p className="text-xs text-slate-500 -mt-2">21 scenarios (H1–H3, J1, K1, I2, B1 — 3 extremes per feature: Low/APPROVED, Moderate/MFA, High/BLOCKED).</p>
+            <p className="text-xs text-slate-500 -mt-2">21 scenarios (H1–H3, J1, K1, I2, B1 — 3 outcomes per feature: Authorized / Requires Authorization / Not Authorized).</p>
                 <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
                   <p className="text-sm font-bold text-slate-300 mb-2">MVP-2 Prerequisites</p>
                   <ul className="text-xs text-slate-400 list-disc list-inside space-y-1">
