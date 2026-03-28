@@ -25,12 +25,12 @@ export const MVP1_SCENARIOS: Mvp1Scenario[] = [
     id: 'c7-cap-ok',
     featureId: 'C7',
     featureName: 'Sovereign Cap',
-    label: 'Cap OK ($5 within limit)',
+    label: 'Cap OK ($800 within auto limit)',
     from: 'test_trusted_partner',
     to: 'test_mature_wallet',
-    amount: '5',
+    amount: '800',
     expected: 'APPROVED',
-    settingsNote: 'Requires sovereignCap ≥ 5',
+    settingsNote: 'Auto-configure cap=$1000 → APPROVED; Community cap=$500 would → MFA',
   },
   {
     id: 'c7-cap-breach',
@@ -59,12 +59,12 @@ export const MVP1_SCENARIOS: Mvp1Scenario[] = [
     id: 'b2-blacklist-low',
     featureId: 'B2',
     featureName: 'Address Lock',
-    label: 'Blacklist low (target whitelist)',
+    label: 'Whitelist target, $800',
     from: 'test_trusted_partner',
     to: 'test_mature_wallet',
-    amount: '10',
+    amount: '800',
     expected: 'APPROVED',
-    settingsNote: 'Target whitelist, no blacklist',
+    settingsNote: 'Auto cap=$1000 → APPROVED; Community cap=$500 would → MFA',
   },
   {
     id: 'b2-blacklist-moderate',
@@ -93,12 +93,12 @@ export const MVP1_SCENARIOS: Mvp1Scenario[] = [
     id: 'e6-peeling-low',
     featureId: 'E6',
     featureName: 'Peeling Chain',
-    label: 'Peeling low (target no peeling)',
+    label: 'Clean target, $800',
     from: 'test_trusted_partner',
     to: 'test_mature_wallet',
-    amount: '10',
+    amount: '800',
     expected: 'APPROVED',
-    settingsNote: 'Target has no peeling',
+    settingsNote: 'Auto cap=$1000 → APPROVED; Community cap=$500 would → MFA',
   },
   {
     id: 'e6-peeling-moderate',
@@ -127,12 +127,12 @@ export const MVP1_SCENARIOS: Mvp1Scenario[] = [
     id: 'e7-virgin-low',
     featureId: 'E7',
     featureName: 'Wallet Maturity',
-    label: 'Virgin low (target established)',
+    label: 'Established target, $800',
     from: 'test_trusted_partner',
     to: 'test_mature_wallet',
-    amount: '10',
+    amount: '800',
     expected: 'APPROVED',
-    settingsNote: 'Target established',
+    settingsNote: 'Auto cap=$1000 → APPROVED; Community cap=$500 would → MFA',
   },
   {
     id: 'e7-virgin-moderate',
@@ -161,12 +161,12 @@ export const MVP1_SCENARIOS: Mvp1Scenario[] = [
     id: 'e4-registry-low',
     featureId: 'E4',
     featureName: 'Pre-check Verdict',
-    label: 'Registry low (source in registry)',
+    label: 'Source in registry, $800',
     from: 'test_trusted_partner',
     to: 'test_mature_wallet',
-    amount: '10',
+    amount: '800',
     expected: 'APPROVED',
-    settingsNote: 'Source in registry',
+    settingsNote: 'Auto cap=$1000 → APPROVED; Community cap=$500 would → MFA',
   },
   {
     id: 'e4-registry-miss',
@@ -184,12 +184,12 @@ export const MVP1_SCENARIOS: Mvp1Scenario[] = [
     id: 'h3-drainer-low',
     featureId: 'H3',
     featureName: 'Known Drainer',
-    label: 'Drainer low (target not drainer)',
+    label: 'Safe target, $800',
     from: 'test_trusted_partner',
     to: 'test_mature_wallet',
-    amount: '10',
+    amount: '800',
     expected: 'APPROVED',
-    settingsNote: 'Target not drainer',
+    settingsNote: 'Auto cap=$1000 → APPROVED; Community cap=$500 would → MFA',
   },
   {
     id: 'h3-drainer-high',
@@ -245,7 +245,7 @@ export function matchLogToScenario(
   return candidates[0];
 }
 
-/** Fields that match Manual Test / check-risk form (MVP-1 scenario → form). */
+/** Fields that match Manual Test / check-risk form (MVP-1 and MVP-2 scenario → form). */
 export type ManualTestPreset = {
   from: string;
   to: string;
@@ -253,6 +253,16 @@ export type ManualTestPreset = {
   txType: string;
   maxSlippage: string;
   slippage: string;
+  /** H1/H2: SpenderAddress for approval/permit drainer guard */
+  spenderAddress?: string;
+  /** J1: chain id sent by the bridge transaction */
+  bridgeChainId?: string;
+  /** J1: chain id the vault expects */
+  expectedChainId?: string;
+  /** K1: token contract address to check against drainer blocklist */
+  tokenContractAddress?: string;
+  /** B1: "true" | "false" | "" — empty = omit from body */
+  isHardwareWallet?: string;
 };
 
 function manualTestExtrasFromParams(params?: Record<string, unknown>): Pick<ManualTestPreset, 'txType' | 'maxSlippage' | 'slippage'> {

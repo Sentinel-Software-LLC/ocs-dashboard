@@ -488,7 +488,7 @@ export default function SovereignConfigurator({
                     </tr>
                   </thead>
                   <tbody>
-                    {group.settings.map((s) => renderSettingRow(s, selectedPosture !== "Custom" /* Custom = editable */))}
+                    {group.settings.map((s) => renderSettingRow(s, selectedPosture === "CurrentSettings"))}
                     {group.key === "trustRange" && onToggleIncidentSwitch && (
                       <tr className="border-b border-slate-700/50">
                         <td className="py-2 pr-4">

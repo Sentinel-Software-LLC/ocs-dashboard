@@ -118,7 +118,6 @@ export default function Home() {
   const [forensicLog, setForensicLog] = useState<RiskLog | null>(null);
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
   const [activeTab, setActiveTab] = useState<'traffic' | 'registryPolicy' | 'audit'>('traffic');
-  const [selectedMvp, setSelectedMvp] = useState<1 | 2 | null>(null);
   /** Selected wallet for policy config. Set from My Wallets or Registry Configure. */
   const [userAddress, setUserAddress] = useState('test_trusted_partner');
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -214,7 +213,7 @@ export default function Home() {
   const [mvpAutoSeed, setMvpAutoSeed] = useState<{
     phase: 'idle' | 'restoring' | 'ok' | 'error';
     detail?: string;
-  }>({ phase: 'idle' });
+  }>({ phase: 'idle', detail: MVP_DEMO_REGISTRY_HINT });
 
   const autoConfigurePolicyForMvp = async () => {
     setMvpAutoSeed({ phase: 'restoring' });
@@ -279,7 +278,13 @@ export default function Home() {
     const baseUrl = `${API_BASE}/check-risk`;
     try {
       const results: { scenario: Mvp2Scenario; actual: ScenarioOutcome; pass: boolean }[] = [];
-      for (const s of MVP2_SCENARIOS) {
+
+      // Split scenarios: H1–I2 run against the seeded default policy (cap=$1000).
+      // B1 scenarios need a higher cap so the HW threshold fires independently — deploy first.
+      const preB1 = MVP2_SCENARIOS.filter((s) => s.featureId !== 'B1');
+      const b1Scenarios = MVP2_SCENARIOS.filter((s) => s.featureId === 'B1');
+
+      for (const s of preB1) {
         const body: Record<string, unknown> = {
           FromAddress: s.from,
           ToAddress: s.to,
@@ -292,9 +297,33 @@ export default function Home() {
           body: JSON.stringify(body),
         });
         const actual = statusToOutcomeMvp2(r.status);
-        const pass = actual === s.expected;
-        results.push({ scenario: s, actual, pass });
+        results.push({ scenario: s, actual, pass: actual === s.expected });
       }
+
+      if (b1Scenarios.length > 0) {
+        // Deploy B1 policy: Custom profile, cap=$100k, HW threshold=$1000
+        await fetch(`${API_BASE}/registry/test_trusted_partner/policy`, {
+          method: 'PUT',
+          headers: { ...await getApiHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ TrustProfile: 2, SovereignCap: 100000, HardwareWalletRequiredAbove: 1000 }),
+        });
+        for (const s of b1Scenarios) {
+          const body: Record<string, unknown> = {
+            FromAddress: s.from,
+            ToAddress: s.to,
+            Amount: s.amount,
+            ...s.params,
+          };
+          const r = await fetch(baseUrl, {
+            method: 'POST',
+            headers: { ...await getApiHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const actual = statusToOutcomeMvp2(r.status);
+          results.push({ scenario: s, actual, pass: actual === s.expected });
+        }
+      }
+
       setTrafficResultsMvp2(results);
       await fetchLogs();
       setConnectionError(null);
@@ -337,14 +366,6 @@ export default function Home() {
   useEffect(() => { fetchIncidentSwitch(); }, []);
   useEffect(() => { if (activeTab === 'registryPolicy') fetchRegistry(); }, [activeTab]);
   useEffect(() => { if (loggedInUser === 'mvp1') fetchRegistry(); }, [loggedInUser]);
-
-  useEffect(() => {
-    if (selectedMvp === null) {
-      setMvpAutoSeed({ phase: 'idle' });
-      return;
-    }
-    setMvpAutoSeed({ phase: 'idle', detail: MVP_DEMO_REGISTRY_HINT });
-  }, [selectedMvp]);
 
   // Auto-refresh traffic every 5 seconds when on Live Traffic tab
   useEffect(() => {
@@ -425,7 +446,7 @@ export default function Home() {
             onClick={() =>
               setMvpAutoSeed({
                 phase: 'idle',
-                detail: selectedMvp != null ? MVP_DEMO_REGISTRY_HINT : undefined,
+                detail: MVP_DEMO_REGISTRY_HINT,
               })
             }
           >
@@ -482,8 +503,6 @@ export default function Home() {
         <AuditTab
           apiBase={API_BASE}
           diagnosticsBase={DIAGNOSTICS_BASE}
-          selectedMvp={selectedMvp}
-          setSelectedMvp={setSelectedMvp}
           mvpAutoSeed={mvpAutoSeed}
           autoConfigurePolicyForMvp={autoConfigurePolicyForMvp}
           trafficResults={trafficResults}

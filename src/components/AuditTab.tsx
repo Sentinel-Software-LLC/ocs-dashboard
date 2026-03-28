@@ -1,7 +1,7 @@
 "use client";
 import { useState } from 'react';
 import { mvp1ScenarioToManualTestPreset, type ManualTestPreset, type Mvp1Scenario, type ScenarioOutcome } from '@/types/mvp1Scenarios';
-import type { Mvp2Scenario } from '@/types/mvp2Scenarios';
+import { mvp2ScenarioToManualTestPreset, type Mvp2Scenario } from '@/types/mvp2Scenarios';
 import CheckRiskForm from './CheckRiskForm';
 import ComplianceTab from './ComplianceTab';
 
@@ -13,8 +13,6 @@ export type MvpAutoSeedState = {
 interface AuditTabProps {
   apiBase: string;
   diagnosticsBase: string;
-  selectedMvp: 1 | 2 | null;
-  setSelectedMvp: (v: 1 | 2 | null) => void;
   mvpAutoSeed: MvpAutoSeedState;
   autoConfigurePolicyForMvp: () => Promise<void>;
   trafficResults: { scenario: Mvp1Scenario; actual: ScenarioOutcome; pass: boolean }[] | null;
@@ -35,14 +33,10 @@ export default function AuditTab(props: AuditTabProps) {
   const {
     apiBase,
     diagnosticsBase,
-    selectedMvp,
-    setSelectedMvp,
     mvpAutoSeed,
     autoConfigurePolicyForMvp,
     trafficResults,
-    setTrafficResults,
     trafficResultsMvp2,
-    setTrafficResultsMvp2,
     generating,
     generatingMvp2,
     generateTraffic,
@@ -60,6 +54,13 @@ export default function AuditTab(props: AuditTabProps) {
   const applyMvp1RowToManualTest = (scenario: Mvp1Scenario) => {
     setManualTestPresetVersion((v) => v + 1);
     setManualTestPreset(mvp1ScenarioToManualTestPreset(scenario));
+    setManualTestPresetLabel(`${scenario.featureId} — ${scenario.label}`);
+    document.getElementById('audit-manual-test')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const applyMvp2RowToManualTest = (scenario: Mvp2Scenario) => {
+    setManualTestPresetVersion((v) => v + 1);
+    setManualTestPreset(mvp2ScenarioToManualTestPreset(scenario));
     setManualTestPresetLabel(`${scenario.featureId} — ${scenario.label}`);
     document.getElementById('audit-manual-test')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
@@ -82,42 +83,13 @@ export default function AuditTab(props: AuditTabProps) {
           <strong className="text-slate-200">Auto-configure policy for MVP</strong> (above Run) resets demo rows and clears overrides, then opens <strong className="text-slate-300">Registry &amp; Policy</strong> so <strong className="text-slate-300">Current Settings</strong> matches the MVP expectation table.
         </p>
         </div>
-        {!selectedMvp ? (
-          <div className="space-y-4">
-            <p className="text-slate-400">Choose which MVP to run. Each has its own prerequisites and scenarios.</p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <button
-                onClick={() => setSelectedMvp(1)}
-                className="p-6 rounded-lg border-2 border-slate-600 bg-slate-900/50 hover:border-emerald-500 hover:bg-emerald-900/20 text-left transition-all"
-              >
-                <p className="font-bold text-xl text-emerald-400 mb-2">MVP-1</p>
-                <p className="text-sm text-slate-400 mb-2">The Sovereign Foundation</p>
-                <p className="text-xs text-slate-500">18 scenarios: C7, B2, E6, E7, E4, H3 (all 3 extremes per feature)</p>
-                <p className="text-xs text-slate-500 mt-1">Expected pass path: use Auto-configure policy for MVP, or Trusted Partner + ~$1000 cap yourself.</p>
-              </button>
-              <button
-                onClick={() => setSelectedMvp(2)}
-                className="p-6 rounded-lg border-2 border-slate-600 bg-slate-900/50 hover:border-amber-500 hover:bg-amber-900/20 text-left transition-all"
-              >
-                <p className="font-bold text-xl text-amber-400 mb-2">MVP-2</p>
-                <p className="text-sm text-slate-400 mb-2">Enterprise Guard</p>
-                <p className="text-xs text-slate-500">7 scenarios: H1, H2, H3, J1, K1, I2, B1</p>
-                <p className="text-xs text-slate-500 mt-1">Expected pass path: Auto-configure + B1 deploy in script, or Institutional + HW threshold yourself.</p>
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-6">
-            <div className="flex items-center gap-4">
-              <button
-                onClick={() => { setSelectedMvp(null); setTrafficResults(null); setTrafficResultsMvp2(null); }}
-                className="text-slate-400 hover:text-white text-sm font-bold"
-              >
-                ← Choose different MVP
-              </button>
-            </div>
-            {selectedMvp === 1 && (
-              <>
+        <p className="text-slate-400 text-sm mb-4">
+          <strong className="text-slate-300">MVP-1</strong> and <strong className="text-slate-300">MVP-2</strong> are both on this page — run either suite below without switching modes.
+        </p>
+        <div className="space-y-8">
+          <div id="mvp1-demo" className="space-y-4 scroll-mt-4">
+            <p className="font-bold text-lg text-emerald-400">MVP-1 — The Sovereign Foundation</p>
+            <p className="text-xs text-slate-500 -mt-2">18 scenarios (C7, B2, E6, E7, E4, H3 — extremes per feature). Expected pass: Auto-configure or Trusted Partner + ~$1000 cap.</p>
                 <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
                   <p className="text-sm font-bold text-slate-300 mb-2">MVP-1 Prerequisites</p>
                   <ul className="text-xs text-slate-400 list-disc list-inside space-y-1">
@@ -138,14 +110,14 @@ export default function AuditTab(props: AuditTabProps) {
                     <button
                       type="button"
                       onClick={() => autoConfigurePolicyForMvp()}
-                      disabled={mvpAutoSeed.phase === 'restoring' || generating}
+                      disabled={mvpAutoSeed.phase === 'restoring' || generating || generatingMvp2}
                       className="bg-slate-600 hover:bg-slate-500 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm border border-slate-500"
                     >
                       Auto-configure policy for MVP
                     </button>
                     <button
                       onClick={generateTraffic}
-                      disabled={generating || mvpAutoSeed.phase === 'restoring'}
+                      disabled={generating || generatingMvp2 || mvpAutoSeed.phase === 'restoring'}
                       className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-600 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm"
                     >
                       {generating ? '⏳ Running…' : '▶ Run MVP-1'}
@@ -195,37 +167,29 @@ export default function AuditTab(props: AuditTabProps) {
                     </table>
                   </div>
                 )}
-              </>
-            )}
-            {selectedMvp === 2 && (
-              <>
+          </div>
+          <div id="mvp2-demo" className="space-y-4 scroll-mt-4 border-t border-slate-700 pt-8">
+            <p className="font-bold text-lg text-amber-400">MVP-2 — Enterprise Guard</p>
+            <p className="text-xs text-slate-500 -mt-2">21 scenarios (H1–H3, J1, K1, I2, B1 — 3 extremes per feature: Low/APPROVED, Moderate/MFA, High/BLOCKED).</p>
                 <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
                   <p className="text-sm font-bold text-slate-300 mb-2">MVP-2 Prerequisites</p>
                   <ul className="text-xs text-slate-400 list-disc list-inside space-y-1">
-                    <li>Engine running; runs use live DB policy — Deploy from Registry &amp; Policy first.</li>
-                    <li>Optional: <strong className="text-slate-300">Auto-configure policy for MVP</strong> resets demo rows like MVP-1.</li>
+                    <li>Engine running; seeded (Auto-configure or manual seed).</li>
+                    <li>H1–I2 scenarios run against the seeded default policy (cap=$1000). B1 policy (Custom, cap=$100k, HW=$1000) is <strong className="text-slate-300">auto-deployed</strong> by the runner before B1 scenarios execute — no manual step needed.</li>
+                    <li>Optional: <strong className="text-slate-300">Auto-configure policy for MVP</strong> resets demo rows (status messages appear under MVP-1 above).</li>
                   </ul>
-                  {mvpAutoSeed.phase === 'idle' && mvpAutoSeed.detail && (
-                    <p className="text-sm text-slate-400 mt-3">{mvpAutoSeed.detail}</p>
-                  )}
-                  {mvpAutoSeed.phase === 'restoring' && (
-                    <p className="text-sm text-amber-200 mt-3">Applying MVP demo policy…</p>
-                  )}
-                  {mvpAutoSeed.phase === 'error' && mvpAutoSeed.detail && (
-                    <p className="text-sm text-red-300 mt-3">Auto-configure failed: {mvpAutoSeed.detail}</p>
-                  )}
                   <div className="flex flex-wrap gap-3 mt-4">
                     <button
                       type="button"
                       onClick={() => autoConfigurePolicyForMvp()}
-                      disabled={mvpAutoSeed.phase === 'restoring' || generatingMvp2}
+                      disabled={mvpAutoSeed.phase === 'restoring' || generating || generatingMvp2}
                       className="bg-slate-600 hover:bg-slate-500 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm border border-slate-500"
                     >
                       Auto-configure policy for MVP
                     </button>
                     <button
                       onClick={generateTrafficMvp2}
-                      disabled={generatingMvp2 || mvpAutoSeed.phase === 'restoring'}
+                      disabled={generatingMvp2 || generating || mvpAutoSeed.phase === 'restoring'}
                       className="bg-amber-600 hover:bg-amber-500 disabled:bg-slate-600 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm"
                     >
                       {generatingMvp2 ? '⏳ Running…' : '▶ Run MVP-2'}
@@ -234,7 +198,7 @@ export default function AuditTab(props: AuditTabProps) {
                 </div>
                 {trafficResultsMvp2 && (
                   <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
-                    <h3 className="text-sm font-bold text-slate-400 mb-1">MVP-2 Results — {trafficResultsMvp2.filter((r) => r.pass).length}/{trafficResultsMvp2.length} matched demo expectations</h3>
+                    <h3 className="text-sm font-bold text-slate-400 mb-1">MVP-2 Results — {trafficResultsMvp2.filter((r) => r.pass).length}/{trafficResultsMvp2.length} matched demo expectations (21 scenarios, 3 extremes per feature)</h3>
                     <p className="text-xs text-slate-500 mb-3">✓ = actual outcome matched the scenario&apos;s Expected column (see callout above).</p>
                     <table className="w-full text-left text-sm">
                       <thead>
@@ -249,7 +213,20 @@ export default function AuditTab(props: AuditTabProps) {
                       </thead>
                       <tbody>
                         {trafficResultsMvp2.map((r, i) => (
-                          <tr key={i} className={`border-b border-slate-700/50 ${r.pass ? '' : 'bg-red-900/20'}`}>
+                          <tr
+                            key={i}
+                            role="button"
+                            tabIndex={0}
+                            title="Load into Manual Test"
+                            className={`border-b border-slate-700/50 cursor-pointer hover:bg-slate-700/35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-500/80 ${r.pass ? '' : 'bg-red-900/20'}`}
+                            onClick={() => applyMvp2RowToManualTest(r.scenario)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                applyMvp2RowToManualTest(r.scenario);
+                              }
+                            }}
+                          >
                             <td className="p-2 font-mono text-slate-300">{r.scenario.featureId}</td>
                             <td className="p-2 text-slate-300">{r.scenario.label}</td>
                             <td className="p-2"><span className={`px-1.5 py-0.5 rounded text-xs ${r.scenario.expected === 'APPROVED' ? 'bg-green-900/20 text-green-300' : r.scenario.expected === 'MFA' ? 'bg-amber-900/20 text-amber-300' : 'bg-red-900/20 text-red-300'}`}>{getRiskLabel(r.scenario.expected)}</span></td>
@@ -262,10 +239,8 @@ export default function AuditTab(props: AuditTabProps) {
                     </table>
                   </div>
                 )}
-              </>
-            )}
           </div>
-        )}
+        </div>
       </div>
 
       <div id="audit-manual-test" className="border-t border-slate-600 pt-8 space-y-6 scroll-mt-4">
