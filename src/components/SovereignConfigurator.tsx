@@ -588,7 +588,7 @@ export default function SovereignConfigurator({
                         <td className="py-2 px-3 text-left w-24 font-mono text-xs text-slate-500">$10,000,000</td>
                       </tr>
                     )}
-                    {group.key === "trustRange" && (
+                    {group.key === "dust" && (
                       <tr className="border-b border-slate-700/50">
                         <td className="py-2 pr-4">
                           <div className="flex items-center gap-1 min-w-0">
