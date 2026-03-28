@@ -35,49 +35,43 @@ const DEFAULT_GUARD_OVERRIDES: GuardOverridesState = {
   allowSlippageExceedance: false,
 };
 
-/** Definitions for each guard toggle — rendered in the Transaction Guard Sensitivity section. */
-const GUARD_CONTROLS: { key: keyof GuardOverridesState; id: string; label: string; description: string; risk: string }[] = [
+/** Definitions for each guard toggle — plain-English, TurboTax-style. */
+const GUARD_CONTROLS: { key: keyof GuardOverridesState; label: string; description: string; risk: string }[] = [
   {
     key: "allowApprovalDrainer",
-    id: "H1",
-    label: "Approval Drainer Guard",
-    description: "Blocks token approvals to known drainer contracts, or unlimited approvals. Applies to TransactionType=approval.",
-    risk: "Drainer contracts can drain your entire token balance via an unlimited approval.",
+    label: "Unlimited token access",
+    description: "You're giving a contract unlimited access to your tokens. Block this if the contract requesting access is unrecognized or suspicious.",
+    risk: "You're allowing a contract to move all your tokens without further approval.",
   },
   {
     key: "allowPermitDrainer",
-    id: "H2",
-    label: "Permit Signature Guard",
-    description: "Blocks EIP-2612 permit signatures to known drainer contracts or with unlimited amounts. Applies to TransactionType=permit.",
-    risk: "Permit signatures are gasless approvals — a malicious permit can be exploited off-chain without a follow-up tx.",
+    label: "Backdated permission slip",
+    description: "You're signing a permission that can be used later — without you doing anything else — to move your tokens. Block this if you didn't initiate it.",
+    risk: "A signed permission could be used later to drain your wallet without warning.",
   },
   {
     key: "allowDrainerAddress",
-    id: "H3",
-    label: "Known Drainer Address",
-    description: "Blocks transactions to addresses on the known drainer contract blocklist. The brain still scores the address at high risk — you may also need to raise Block Threshold to proceed.",
-    risk: "Known drainer contracts are confirmed theft vectors. This is the highest-risk guard to bypass.",
+    label: "Known thief address",
+    description: "The address you're sending to has been flagged for stealing funds from other wallets. This check runs even after you set it to Allow — your risk score will still be high.",
+    risk: "This address has been flagged for theft — sending here may result in total loss.",
   },
   {
     key: "allowBridgeMismatch",
-    id: "J1",
-    label: "Bridge Chain Validation",
-    description: "Blocks bridge transactions where the destination chain ID does not match the expected chain ID. Applies to TransactionType=bridge.",
-    risk: "Chain ID mismatches indicate a bridge redirect attack — funds sent to the wrong chain are typically unrecoverable.",
+    label: "Wrong destination chain",
+    description: "Your funds are being sent to a different blockchain than the one you selected. This is almost always a sign something has gone wrong or been tampered with.",
+    risk: "Your funds may arrive on the wrong blockchain and be unrecoverable.",
   },
   {
     key: "allowTokenImpersonation",
-    id: "K1",
-    label: "Token Impersonation Guard",
-    description: "Blocks transactions involving token contract addresses on the drainer blocklist.",
-    risk: "Fake tokens can impersonate legitimate assets and execute malicious logic on approval or transfer.",
+    label: "Counterfeit token",
+    description: "The token you're interacting with has been flagged as a fake — it may look like a real coin but is designed to steal from you.",
+    risk: "This token contract is a known fake — interacting with it may drain your wallet.",
   },
   {
     key: "allowSlippageExceedance",
-    id: "I2",
-    label: "Slippage Guard",
-    description: "Blocks DEX swaps where the actual slippage percent exceeds your configured maximum. Applies to TransactionType=dex_swap.",
-    risk: "High slippage on swaps can cause significant value loss, often the result of sandwich attacks.",
+    label: "Trade slippage limit",
+    description: "You're getting back less from this trade than you set as your acceptable limit. This can happen naturally in volatile markets or during a sandwich attack.",
+    risk: "You may receive significantly less than expected on this trade.",
   },
 ];
 
@@ -721,44 +715,40 @@ export default function SovereignConfigurator({
             )}
           </div>
         ))}
-        {/* HC2: Transaction Guard Sensitivity */}
+        {/* HC2: Transaction Risk Checks */}
         <div className="border border-slate-700 rounded-lg overflow-hidden">
           <button
             type="button"
             onClick={() => toggleSection("guards")}
             className="w-full px-4 py-2 text-left text-sm font-medium text-slate-300 bg-slate-800/50 hover:bg-slate-800"
           >
-            {expandedSections.guards ? "▼" : "▶"} Transaction Guard Sensitivity
+            {expandedSections.guards ? "▼" : "▶"} Transaction Risk Checks
             {Object.values(guardOverrides).some(Boolean) && (
               <span className="ml-2 text-xs font-bold text-amber-400">
-                {Object.values(guardOverrides).filter(Boolean).length} bypassed
+                {Object.values(guardOverrides).filter(Boolean).length} set to Allow
               </span>
             )}
           </button>
           {expandedSections.guards && (
             <div className="px-4 py-3 space-y-1 border-t border-slate-700/80 bg-slate-900/30">
               <p className="text-xs text-slate-500 mb-3">
-                Each guard is a hard pre-check that fires before trust-range evaluation. <strong>Active</strong> = guard
-                fires (recommended default). <strong>Bypass</strong> = guard is skipped — the transaction proceeds to
-                your trust-range settings. You remain in full control; the system advises, not vetoes.
+                These checks run automatically on every transaction. <strong className="text-slate-400">Block</strong> = stop the transaction if this risk is detected (recommended).{" "}
+                <strong className="text-slate-400">Allow</strong> = let it through even if detected — you accept the risk.
               </p>
               {GUARD_CONTROLS.map((g) => {
-                const bypassed = guardOverrides[g.key];
+                const allowed = guardOverrides[g.key];
                 return (
                   <div
                     key={g.key}
-                    className={`py-3 border-b border-slate-700/50 last:border-0 ${bypassed ? "bg-amber-950/20 -mx-4 px-4 rounded" : ""}`}
+                    className={`py-3 border-b border-slate-700/50 last:border-0 ${allowed ? "bg-amber-950/20 -mx-4 px-4 rounded" : ""}`}
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-slate-500 bg-slate-800 px-1.5 py-0.5 rounded font-mono">{g.id}</span>
-                          <span className="text-sm font-medium text-slate-300">{g.label}</span>
-                        </div>
+                        <span className="text-sm font-medium text-slate-300">{g.label}</span>
                         <p className="text-xs text-slate-500 mt-1 leading-snug">{g.description}</p>
-                        {bypassed && (
+                        {allowed && (
                           <p className="text-xs text-amber-400/90 mt-1 leading-snug">
-                            ⚠ Risk accepted: {g.risk}
+                            ⚠ {g.risk}
                           </p>
                         )}
                       </div>
@@ -780,7 +770,7 @@ export default function SovereignConfigurator({
                                 : "bg-slate-800 text-slate-400"
                             } disabled:opacity-50 disabled:cursor-not-allowed`}
                           >
-                            {val === false ? "Active" : "Bypass"}
+                            {val === false ? "Block" : "Allow"}
                           </button>
                         ))}
                       </div>
@@ -789,7 +779,7 @@ export default function SovereignConfigurator({
                 );
               })}
               {!canEditDraft && (
-                <p className="text-xs text-amber-400/90 mt-2">Select a <strong>defense posture</strong> (not Current Settings) to edit guard sensitivity.</p>
+                <p className="text-xs text-amber-400/90 mt-2">Select a <strong>defense posture</strong> (not Current Settings) to edit these checks.</p>
               )}
             </div>
           )}
