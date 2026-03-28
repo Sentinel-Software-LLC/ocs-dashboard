@@ -18,6 +18,14 @@ type DefensePosture = "CurrentSettings" | "ZeroTrust" | "CommunityTrust" | "Inst
 type ListEnforcementState = { blacklist: "block" | "allow"; graylist: "block" | "allow"; whitelist: "block" | "allow" };
 
 
+/** Per-posture inbound dust threshold defaults (USD). Null = disabled. */
+const POSTURE_DUST_THRESHOLDS: Partial<Record<DefensePosture, number | null>> = {
+  ZeroTrust:     5,    // $5 — maximum vigilance; flag any micro-inbound
+  CommunityTrust: 1,   // $1 — covers 95%+ of real dust attacks ($0.001–$0.50 typical)
+  Institutional:  2,   // $2 — high-value target; slight headroom for legit small flows
+  Custom:         null, // user-defined from scratch
+};
+
 /** Community / Institutional presets: greylist is a risk signal only unless you set Block. */
 const DEFAULT_LIST_ENFORCEMENT: ListEnforcementState = {
   blacklist: "block",
@@ -299,7 +307,7 @@ export default function SovereignConfigurator({
     setSelectedPosture(p.id);
     setSettings(getInitialSettings(p.id));
     setListEnforcement(p.id === "ZeroTrust" ? ZERO_TRUST_LIST_ENFORCEMENT : DEFAULT_LIST_ENFORCEMENT);
-    setInboundDustThresholdUsd(null);
+    setInboundDustThresholdUsd(POSTURE_DUST_THRESHOLDS[p.id] ?? null);
     setHardwareWalletRequiredAbove(null);
   };
 
@@ -323,7 +331,7 @@ export default function SovereignConfigurator({
       setSettings(getInitialSettings(selectedPosture));
     }
     setListEnforcement({ ...DEFAULT_LIST_ENFORCEMENT });
-    setInboundDustThresholdUsd(null);
+    setInboundDustThresholdUsd(POSTURE_DUST_THRESHOLDS[selectedPosture] ?? null);
     setHardwareWalletRequiredAbove(null);
     setDeployError(null);
   };
@@ -586,9 +594,9 @@ export default function SovereignConfigurator({
                             <InfoTooltip
                               title="Inbound Dust Threshold"
                               description="Inbound transactions below this USD amount from unregistered addresses trigger MFA review. Protects against dusting attacks that de-anonymize your wallet. 0 or empty = disabled."
-                              zeroTrust="Set low (e.g. $0.10) to flag all micro-inbound."
-                              communityTrust="Optional; e.g. $1.00 to catch common dust amounts."
-                              whereUsed="CheckRisk returns MFA_REQUIRED when inbound amount is below threshold."
+                              zeroTrust="$5 default — flag any micro-inbound (maximum vigilance)."
+                              communityTrust="$1 default — covers 95%+ of real dust attacks ($0.001–$0.50 typical)."
+                              whereUsed="CheckRisk returns MFA_REQUIRED when inbound amount is below threshold. Institutional default: $2."
                             />
                           </div>
                         </td>
