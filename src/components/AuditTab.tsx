@@ -68,6 +68,24 @@ export default function AuditTab(props: AuditTabProps) {
   return (
     <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl space-y-8">
       <h2 className="text-xl text-slate-300 underline underline-offset-8">Audit & Export</h2>
+      <p className="text-xs text-slate-500 -mt-4 mb-2">
+        Jump:{' '}
+        <a href="#pi06-compliance" className="text-emerald-400 hover:underline">PI.06 pass/fail</a>
+        {' · '}
+        <a href="#mvp1-demo" className="text-emerald-400 hover:underline">MVP-1</a>
+        {' · '}
+        <a href="#mvp2-demo" className="text-emerald-400 hover:underline">MVP-2</a>
+        {' · '}
+        <a href="#audit-manual-test" className="text-emerald-400 hover:underline">Manual &amp; exports</a>
+      </p>
+
+      <div id="pi06-compliance" className="scroll-mt-4 border border-slate-600 rounded-lg p-4 bg-slate-900/30">
+        <h3 className="text-lg font-bold text-slate-300 mb-2">PI.06 — Compliance &amp; Horizon</h3>
+        <p className="text-xs text-slate-500 mb-4">
+          <strong className="text-slate-400">Not</strong> a top nav tab — proof lives here. Use <strong className="text-slate-300">▶ Run PI.06 checks</strong> for a director-grade pass/fail table (F4, E2, H5, G4, M2). Registry → <em>Transaction Risk Checks</em> is PI.07 posture, not this PI.06 surface.
+        </p>
+        <ComplianceTab diagnosticsBase={diagnosticsBase} getApiHeaders={getApiHeaders} embedded />
+      </div>
 
       <div>
         <h3 className="text-lg font-bold text-slate-300 mb-4">Automated MVP Demo</h3>
@@ -298,11 +316,6 @@ export default function AuditTab(props: AuditTabProps) {
             Download Signed Forensics Bundle — F3
           </button>
         </div>
-      </div>
-
-      <div className="border-t border-slate-600 pt-8">
-        <h3 className="text-lg font-bold text-slate-300 mb-4">Compliance (PI.06)</h3>
-        <ComplianceTab diagnosticsBase={diagnosticsBase} getApiHeaders={getApiHeaders} embedded />
       </div>
     </div>
   );
