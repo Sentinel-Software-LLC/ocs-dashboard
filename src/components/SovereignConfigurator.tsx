@@ -94,6 +94,14 @@ const POSTURE_DUST_THRESHOLDS: Partial<Record<DefensePosture, number | null>> = 
   Custom:         null,  // user-defined from scratch
 };
 
+/** How long (minutes) an MFA/BLOCKED hold sits in the Action Required queue before auto-expiring. */
+const POSTURE_HOLD_TIMEOUTS: Partial<Record<DefensePosture, number>> = {
+  ZeroTrust:      1,   // 1 min — strict; holds expire fast, forcing immediate action
+  CommunityTrust: 5,   // 5 min — reasonable window for a non-custodial user
+  Institutional:  15,  // 15 min — allows time for supervisor review
+  Custom:         5,   // user can override
+};
+
 /** Community / Institutional presets: greylist is a risk signal only unless you set Block. */
 const DEFAULT_LIST_ENFORCEMENT: ListEnforcementState = {
   blacklist: "block",
@@ -175,6 +183,8 @@ export default function SovereignConfigurator({
   const [guardOverrides, setGuardOverrides] = useState<GuardOverridesState>({ ...DEFAULT_GUARD_OVERRIDES });
   /** Inbound dust protection: MFA required when inbound amount is below this USD threshold. Null/0 = disabled. */
   const [inboundDustThresholdUsd, setInboundDustThresholdUsd] = useState<number | null>(null);
+  /** Hold timeout: minutes an MFA/BLOCKED action sits in the queue before auto-expiring. */
+  const [holdTimeoutMinutes, setHoldTimeoutMinutes] = useState<number>(5);
   /** B1: Amount (USD) above which hardware wallet is required. Null/0 = no requirement. Custom posture only. */
   const [hardwareWalletRequiredAbove, setHardwareWalletRequiredAbove] = useState<number | null>(null);
   /** True when DB has Custom (profile 2) for this address — enables Generate Policy Tests. */
@@ -231,6 +241,9 @@ export default function SovereignConfigurator({
           }
           const dt = rawOverrides.inboundDustThresholdUsd;
           setInboundDustThresholdUsd(typeof dt === "number" && dt > 0 ? dt : null);
+          const ht = rawOverrides.holdTimeoutMinutes;
+          const profileToPosture: Record<number, DefensePosture> = { 0: "ZeroTrust", 1: "CommunityTrust", 2: "Custom", 3: "Institutional" };
+          setHoldTimeoutMinutes(typeof ht === "number" && ht > 0 ? ht : (POSTURE_HOLD_TIMEOUTS[profileToPosture[profile]] ?? 5));
           const guardsRaw = rawOverrides.guards as Record<string, boolean> | undefined;
           if (guardsRaw && typeof guardsRaw === "object") {
             setGuardOverrides({
@@ -351,6 +364,7 @@ export default function SovereignConfigurator({
           ...(inboundDustThresholdUsd != null && inboundDustThresholdUsd > 0
             ? { inboundDustThresholdUsd }
             : {}),
+          holdTimeoutMinutes,
           // Only include guards object when at least one guard is bypassed (keeps JSON clean)
           ...(Object.values(guardOverrides).some(Boolean)
             ? { guards: { ...guardOverrides } }
@@ -399,6 +413,7 @@ export default function SovereignConfigurator({
     setSettings(getInitialSettings(p.id));
     setListEnforcement(p.id === "ZeroTrust" ? ZERO_TRUST_LIST_ENFORCEMENT : DEFAULT_LIST_ENFORCEMENT);
     setInboundDustThresholdUsd(POSTURE_DUST_THRESHOLDS[p.id] ?? null);
+    setHoldTimeoutMinutes(POSTURE_HOLD_TIMEOUTS[p.id] ?? 5);
     setHardwareWalletRequiredAbove(null);
     setGuardOverrides({ ...DEFAULT_GUARD_OVERRIDES }); // Guards always start fail-closed on posture switch
   };
@@ -424,6 +439,7 @@ export default function SovereignConfigurator({
     }
     setListEnforcement({ ...DEFAULT_LIST_ENFORCEMENT });
     setInboundDustThresholdUsd(POSTURE_DUST_THRESHOLDS[selectedPosture] ?? null);
+    setHoldTimeoutMinutes(POSTURE_HOLD_TIMEOUTS[selectedPosture] ?? 5);
     setHardwareWalletRequiredAbove(null);
     setGuardOverrides({ ...DEFAULT_GUARD_OVERRIDES });
     setDeployError(null);
@@ -718,6 +734,41 @@ export default function SovereignConfigurator({
                         <td className="py-2 px-3 text-left w-24 font-mono text-xs text-slate-500">$10</td>
                       </tr>
                     )}
+                    {/* Hold timeout: how long an action sits in queue before auto-expiring */}
+                    <tr className="border-t border-slate-700/40">
+                      <td className="py-2 px-3">
+                        <div className="flex items-start gap-2">
+                          <span className="text-sm text-slate-300 font-medium">Action Hold Timeout</span>
+                          <InfoTooltip
+                            title="Action Hold Timeout"
+                            description="How long (minutes) a Requires Authorization or Not Authorized transaction stays in the Action Required queue before it auto-expires and is confirmed as blocked."
+                            zeroTrust="1 min — strict; holds expire fast, forcing immediate action."
+                            communityTrust="5 min — reasonable window for a self-custody user."
+                            whereUsed="Used by the Transactions tab countdown timer. When the hold expires, the transaction auto-confirms as blocked."
+                          />
+                        </div>
+                      </td>
+                      <td className="py-2 px-3 text-right w-24 font-mono text-xs text-slate-500">1 min</td>
+                      <td className="py-2 px-3 w-28">
+                        {canEditDraft ? (
+                          <input
+                            type="number"
+                            min={1}
+                            max={60}
+                            step={1}
+                            value={holdTimeoutMinutes}
+                            onChange={(e) => {
+                              const v = Math.min(60, Math.max(1, Number(e.target.value) || 5));
+                              setHoldTimeoutMinutes(v);
+                            }}
+                            className="w-full bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm border border-slate-600 focus:border-slate-500 focus:ring-1 focus:ring-slate-500 font-mono text-right"
+                          />
+                        ) : (
+                          <span className="font-mono text-slate-200 text-sm block text-right">{holdTimeoutMinutes} min</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-left w-24 font-mono text-xs text-slate-500">60 min</td>
+                    </tr>
                   </tbody>
                 </table>
               </div>

@@ -141,7 +141,7 @@ export default function ComplianceTab({
             <p className="text-xs text-slate-500 mt-1">
               These five probes load automatically when this section is shown. <strong className="text-slate-400">Run MVP-3 full suite</strong> (in this MVP-3 card, above)
               runs them after seed; M2 is then tagged as the full-suite flow on the server. <strong className="text-slate-400">Refresh PI.06 only</strong> re-runs the same probes
-              with a <em>standalone</em> M2 label (<q>demo attestation</q>) — use that when you are not running the whole MVP-3 pipeline.
+              with a <em>standalone</em> M2 label (demo attestation) — use that when you are not running the whole MVP-3 pipeline.
             </p>
             {lastCompletedAt && (
               <p className="text-[11px] text-slate-500 mt-1">Last completed: {lastCompletedAt}</p>
