@@ -10,6 +10,17 @@ export type MvpAutoSeedState = {
   detail?: string;
 };
 
+export type Mvp3SuiteSummary = {
+  finishedAt: string;
+  pi06Pass: number;
+  pi06Total: number;
+  mvp1Pass: number;
+  mvp1Total: number;
+  mvp2Pass: number;
+  mvp2Total: number;
+  allGreen: boolean;
+};
+
 interface AuditTabProps {
   apiBase: string;
   diagnosticsBase: string;
@@ -21,8 +32,14 @@ interface AuditTabProps {
   setTrafficResultsMvp2: (v: { scenario: Mvp2Scenario; actual: ScenarioOutcome; pass: boolean }[] | null) => void;
   generating: boolean;
   generatingMvp2: boolean;
-  generateTraffic: () => Promise<void>;
-  generateTrafficMvp2: () => Promise<void>;
+  generatingMvp3: boolean;
+  mvp3Summary: Mvp3SuiteSummary | null;
+  runMvp3FullSuite: () => Promise<void>;
+  complianceRefreshToken: number;
+  mvp1ScenarioCount: number;
+  mvp2ScenarioCount: number;
+  generateTraffic: () => Promise<unknown>;
+  generateTrafficMvp2: () => Promise<unknown>;
   fetchLogs: () => void;
   getApiHeaders: () => Promise<Record<string, string>>;
   getRiskLabel: (s: string) => string;
@@ -39,6 +56,12 @@ export default function AuditTab(props: AuditTabProps) {
     trafficResultsMvp2,
     generating,
     generatingMvp2,
+    generatingMvp3,
+    mvp3Summary,
+    runMvp3FullSuite,
+    complianceRefreshToken,
+    mvp1ScenarioCount,
+    mvp2ScenarioCount,
     generateTraffic,
     generateTrafficMvp2,
     fetchLogs,
@@ -70,6 +93,8 @@ export default function AuditTab(props: AuditTabProps) {
       <h2 className="text-xl text-slate-300 underline underline-offset-8">Audit & Export</h2>
       <p className="text-xs text-slate-500 -mt-4 mb-2">
         Jump:{' '}
+        <a href="#mvp3-suite" className="text-emerald-400 hover:underline">MVP-3 suite</a>
+        {' · '}
         <a href="#pi06-compliance" className="text-emerald-400 hover:underline">PI.06 pass/fail</a>
         {' · '}
         <a href="#mvp1-demo" className="text-emerald-400 hover:underline">MVP-1</a>
@@ -79,12 +104,80 @@ export default function AuditTab(props: AuditTabProps) {
         <a href="#audit-manual-test" className="text-emerald-400 hover:underline">Manual &amp; exports</a>
       </p>
 
+      <div id="mvp3-suite" className="scroll-mt-4 border border-violet-700/40 rounded-lg p-4 bg-violet-950/25">
+        <h3 className="text-lg font-bold text-violet-200 mb-2">MVP-3 — Prevention production (one-shot)</h3>
+        <p className="text-xs text-slate-400 mb-4">
+          Runs, in order: <strong className="text-slate-300">POST /api/diagnostics/seed</strong> (same data reset as Auto-configure, without switching tabs) →{' '}
+          <strong className="text-slate-300">PI.06</strong> diagnostics (5 probes on <code className="text-slate-500">/api/diagnostics/*</code>) →{' '}
+          <strong className="text-slate-300">MVP-1</strong> ({mvp1ScenarioCount} <code className="text-slate-500">check-risk</code> scenarios) →{' '}
+          <strong className="text-slate-300">MVP-2</strong> ({mvp2ScenarioCount} scenarios).
+          Result table below is the director-facing pass/fail breakdown.{' '}
+          <strong className="text-slate-500">PI.07</strong> user posture (Registry → Transaction Risk Checks) is not automated here — configure that separately.
+        </p>
+        <div className="overflow-x-auto mb-4">
+          <table className="w-full text-left text-xs border border-slate-600 rounded">
+            <thead>
+              <tr className="border-b border-slate-600 bg-slate-900/80 text-slate-500">
+                <th className="p-2">What you are proving</th>
+                <th className="p-2">Where it is exercised</th>
+              </tr>
+            </thead>
+            <tbody className="text-slate-400">
+              <tr className="border-b border-slate-700/60">
+                <td className="p-2 text-slate-300">PI.06 compliance / horizon stubs (F4, E2, H5, G4, M2)</td>
+                <td className="p-2 font-mono text-[11px]">GET/POST /api/diagnostics/… (see PI.06 block below)</td>
+              </tr>
+              <tr className="border-b border-slate-700/60">
+                <td className="p-2 text-slate-300">MVP-1 sovereign foundation (cap, lists, peeling, virgin, …)</td>
+                <td className="p-2 font-mono text-[11px]">POST /api/PGTAIL/check-risk — MVP-1 Results table</td>
+              </tr>
+              <tr className="border-b border-slate-700/60">
+                <td className="p-2 text-slate-300">MVP-2 enterprise guard (H1–I2, B1, …)</td>
+                <td className="p-2 font-mono text-[11px]">POST /api/PGTAIL/check-risk — MVP-2 Results table</td>
+              </tr>
+              <tr>
+                <td className="p-2 text-slate-300">PI.07 guard posture (Block/Allow per risk)</td>
+                <td className="p-2 font-mono text-[11px]">Registry &amp; Policy → Transaction Risk Checks (manual)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void runMvp3FullSuite()}
+            disabled={generatingMvp3 || generating || generatingMvp2 || mvpAutoSeed.phase === 'restoring'}
+            className="bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm"
+          >
+            {generatingMvp3 ? '⏳ Running MVP-3 suite…' : '▶ Run MVP-3 full suite'}
+          </button>
+          <span className="text-[11px] text-slate-500">
+            Uses factory demo registry after seed. For AWS, point the dashboard at the deployed Engine URL first.
+          </span>
+        </div>
+        {mvp3Summary && (
+          <div className={`mt-4 p-3 rounded-lg border text-sm ${mvp3Summary.allGreen ? 'border-emerald-700/50 bg-emerald-950/30 text-emerald-200' : 'border-amber-700/50 bg-amber-950/30 text-amber-100'}`}>
+            <p className="font-bold mb-2">MVP-3 last run — {mvp3Summary.finishedAt}</p>
+            <ul className="text-xs space-y-1 font-mono">
+              <li>PI.06: {mvp3Summary.pi06Pass}/{mvp3Summary.pi06Total} (diagnostics endpoints)</li>
+              <li>MVP-1: {mvp3Summary.mvp1Pass}/{mvp3Summary.mvp1Total} (check-risk vs canned expectations)</li>
+              <li>MVP-2: {mvp3Summary.mvp2Pass}/{mvp3Summary.mvp2Total} (check-risk vs canned expectations)</li>
+            </ul>
+            <p className="mt-2 text-xs font-sans">
+              {mvp3Summary.allGreen
+                ? 'All three bands green for this Engine and demo registry preset.'
+                : 'At least one band failed — scroll to PI.06 / MVP-1 / MVP-2 for row-level ✓/✗ (policy drift or Engine/CORS/allowlist).'}
+            </p>
+          </div>
+        )}
+      </div>
+
       <div id="pi06-compliance" className="scroll-mt-4 border border-slate-600 rounded-lg p-4 bg-slate-900/30">
         <h3 className="text-lg font-bold text-slate-300 mb-2">PI.06 — Compliance &amp; Horizon</h3>
         <p className="text-xs text-slate-500 mb-4">
           <strong className="text-slate-400">Not</strong> a top nav tab — proof lives here. Use <strong className="text-slate-300">▶ Run PI.06 checks</strong> for a director-grade pass/fail table (F4, E2, H5, G4, M2). Registry → <em>Transaction Risk Checks</em> is PI.07 posture, not this PI.06 surface.
         </p>
-        <ComplianceTab diagnosticsBase={diagnosticsBase} getApiHeaders={getApiHeaders} embedded />
+        <ComplianceTab diagnosticsBase={diagnosticsBase} getApiHeaders={getApiHeaders} embedded refreshToken={complianceRefreshToken} />
       </div>
 
       <div>

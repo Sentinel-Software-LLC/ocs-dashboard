@@ -7,6 +7,7 @@ import AuditTab from '@/components/AuditTab';
 import GovernanceTab from '@/components/GovernanceTab';
 import { MVP1_SCENARIOS, statusToOutcome, matchLogToScenario, type Mvp1Scenario, type ScenarioOutcome } from '@/types/mvp1Scenarios';
 import { MVP2_SCENARIOS, statusToOutcomeMvp2, matchLogToScenarioMvp2, type Mvp2Scenario } from '@/types/mvp2Scenarios';
+import { runPi06ComplianceChecks } from '@/lib/pi06ComplianceChecks';
 
 function parseForensicDetails(detailsJson: string): ForensicDetails | null {
   try {
@@ -53,6 +54,9 @@ function parseForensicDetails(detailsJson: string): ForensicDetails | null {
 
 type InternalStatus = 'BLOCKED' | 'MFA_REQUIRED' | 'APPROVED';
 
+/** User / UI resolution for action-queue items */
+type HoldDecision = 'allowed' | 'blocked' | 'blocked_timeout';
+
 function getStatus(log: RiskLog): InternalStatus {
   const v = (log.verdict || '').toUpperCase();
   if (v.includes('BLOCKED')) return 'BLOCKED';
@@ -77,6 +81,18 @@ function getAuthorizationLabel(status: InternalStatus | 'APPROVED' | 'MFA' | 'BL
   return '—';
 }
 
+/** Read holdTimeoutMinutes from the active vault's policyOverrides and return it as ms. Defaults to 5 min. */
+function getHoldTimeoutMs(registry: { hexAddress?: string; policyOverrides?: unknown; PolicyOverrides?: unknown }[], userAddress: string): number {
+  const entry = registry.find(r => r.hexAddress?.toLowerCase() === userAddress?.toLowerCase());
+  if (!entry) return 5 * 60 * 1000;
+  const raw = entry.policyOverrides ?? entry.PolicyOverrides;
+  try {
+    const po = typeof raw === 'string' ? JSON.parse(raw) as Record<string, unknown> : raw as Record<string, unknown> | undefined;
+    const mins = po?.holdTimeoutMinutes;
+    return typeof mins === 'number' && mins > 0 ? mins * 60 * 1000 : 5 * 60 * 1000;
+  } catch { return 5 * 60 * 1000; }
+}
+
 function formatTime(ts: string): string {
   try {
     const d = new Date(ts);
@@ -96,6 +112,8 @@ interface RegistryEntry {
   minConfidenceCeiling: number;
   trustProfile: number;
   notes: string;
+  policyOverrides?: string | Record<string, unknown>;
+  PolicyOverrides?: string | Record<string, unknown>;
 }
 
 const ENGINE_BASE = process.env.NEXT_PUBLIC_ENGINE_URL || 'http://localhost:5193';
@@ -119,6 +137,18 @@ export default function Home() {
   const [forensicLog, setForensicLog] = useState<RiskLog | null>(null);
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
   const [activeTab, setActiveTab] = useState<'traffic' | 'registryPolicy' | 'audit' | 'governance'>('traffic');
+  /** User decisions on action-required transactions. blocked_timeout = hold expired without user input. Keyed by log.id. */
+  const [decisions, setDecisions] = useState<Record<number, HoldDecision>>({});
+  /** After undoing a timeout block: hold stays open with no auto-expire until user chooses Allow/Block. */
+  const [holdIndefinite, setHoldIndefinite] = useState<Record<number, boolean>>({});
+  /** Which action-queue row has its inline details expanded. */
+  const [expandedAction, setExpandedAction] = useState<number | null>(null);
+  /** Log id briefly highlighted in the traffic table after "In log" click. */
+  const [highlightedLogId, setHighlightedLogId] = useState<number | null>(null);
+  /** Pending action that requires a confirmation modal before committing. */
+  const [pendingAction, setPendingAction] = useState<{ logId: number; isMfa: boolean } | null>(null);
+  /** Ticks every second — drives countdown timers in the action queue. */
+  const [nowMs, setNowMs] = useState(() => Date.now());
   /** Selected wallet for policy config. Set from My Wallets or Registry Configure. */
   const [userAddress, setUserAddress] = useState('test_trusted_partner');
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -210,6 +240,18 @@ export default function Home() {
   const [incidentSwitchLoading, setIncidentSwitchLoading] = useState(false);
   const [trafficResults, setTrafficResults] = useState<{ scenario: Mvp1Scenario; actual: ScenarioOutcome; pass: boolean }[] | null>(null);
   const [trafficResultsMvp2, setTrafficResultsMvp2] = useState<{ scenario: Mvp2Scenario; actual: ScenarioOutcome; pass: boolean }[] | null>(null);
+  const [complianceRefreshToken, setComplianceRefreshToken] = useState(0);
+  const [mvp3Running, setMvp3Running] = useState(false);
+  const [mvp3Summary, setMvp3Summary] = useState<{
+    finishedAt: string;
+    pi06Pass: number;
+    pi06Total: number;
+    mvp1Pass: number;
+    mvp1Total: number;
+    mvp2Pass: number;
+    mvp2Total: number;
+    allGreen: boolean;
+  } | null>(null);
   /** MVP auto-configure (POST seed): optional; opening MVP alone does not call it. */
   const [mvpAutoSeed, setMvpAutoSeed] = useState<{
     phase: 'idle' | 'restoring' | 'ok' | 'error';
@@ -237,7 +279,7 @@ export default function Home() {
     }
   };
 
-  const generateTraffic = async () => {
+  const generateTraffic = async (): Promise<{ scenario: Mvp1Scenario; actual: ScenarioOutcome; pass: boolean }[] | null> => {
     setGenerating(true);
     setConnectionError(null);
     setTrafficResults(null);
@@ -263,16 +305,18 @@ export default function Home() {
       setTrafficResults(results);
       await fetchLogs();
       setConnectionError(null);
+      return results;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       setConnectionError(`Traffic generation failed. Is PGTAIL.Engine running? ${msg}`);
       console.error('Traffic generation failed:', err);
+      return null;
     } finally {
       setGenerating(false);
     }
   };
 
-  const generateTrafficMvp2 = async () => {
+  const generateTrafficMvp2 = async (): Promise<{ scenario: Mvp2Scenario; actual: ScenarioOutcome; pass: boolean }[] | null> => {
     setGeneratingMvp2(true);
     setConnectionError(null);
     setTrafficResultsMvp2(null);
@@ -328,12 +372,60 @@ export default function Home() {
       setTrafficResultsMvp2(results);
       await fetchLogs();
       setConnectionError(null);
+      return results;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       setConnectionError(`MVP-2 traffic generation failed. Is PGTAIL.Engine running? ${msg}`);
       console.error('MVP-2 traffic generation failed:', err);
+      return null;
     } finally {
       setGeneratingMvp2(false);
+    }
+  };
+
+  /** MVP-3 (Prevention production): seed demo DB + PI.06 diagnostics + MVP-1 + MVP-2 in one run with aggregate pass/fail (PI.07 posture is still manual under Registry). */
+  const runMvp3FullSuite = async () => {
+    setMvp3Running(true);
+    setMvp3Summary(null);
+    setConnectionError(null);
+    try {
+      const seedRes = await fetch(`${DIAGNOSTICS_BASE}/seed`, { method: 'POST', headers: await getApiHeaders() });
+      if (!seedRes.ok) throw new Error(`Seed failed: HTTP ${seedRes.status}`);
+      await fetchRegistry();
+      setRegistryConfiguratorSync((n) => n + 1);
+
+      const pi06 = await runPi06ComplianceChecks(DIAGNOSTICS_BASE, getApiHeaders);
+      if (pi06.error) throw new Error(pi06.error);
+      setComplianceRefreshToken((t) => t + 1);
+
+      const mvp1 = await generateTraffic();
+      if (!mvp1) throw new Error('MVP-1 did not complete');
+
+      const mvp2 = await generateTrafficMvp2();
+      if (!mvp2) throw new Error('MVP-2 did not complete');
+
+      const pi06Pass = pi06.rows.filter((r) => r.pass).length;
+      const mvp1Pass = mvp1.filter((r) => r.pass).length;
+      const mvp2Pass = mvp2.filter((r) => r.pass).length;
+
+      setMvp3Summary({
+        finishedAt: new Date().toLocaleString(),
+        pi06Pass,
+        pi06Total: pi06.rows.length,
+        mvp1Pass,
+        mvp1Total: mvp1.length,
+        mvp2Pass,
+        mvp2Total: mvp2.length,
+        allGreen:
+          pi06Pass === pi06.rows.length
+          && mvp1Pass === mvp1.length
+          && mvp2Pass === mvp2.length,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'MVP-3 suite failed';
+      setConnectionError(msg);
+    } finally {
+      setMvp3Running(false);
     }
   };
 
@@ -375,6 +467,31 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
+  // Tick every second for countdown timers
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Auto-expire action items whose hold timer has run out — mark as blocked_timeout (not user block)
+  useEffect(() => {
+    if (!logs.length) return;
+    const holdTimeoutMs = getHoldTimeoutMs(registry, userAddress);
+    const expired = logs.filter(l => {
+      const s = getStatus(l);
+      if (s !== 'MFA_REQUIRED' && s !== 'BLOCKED') return false;
+      if (decisions[l.id]) return false;
+      if (holdIndefinite[l.id]) return false;
+      return Date.now() - new Date(l.timestamp).getTime() > holdTimeoutMs;
+    }).map(l => l.id);
+    if (expired.length === 0) return;
+    setDecisions(prev => {
+      const next = { ...prev };
+      expired.forEach(id => { if (!next[id]) next[id] = 'blocked_timeout'; });
+      return next;
+    });
+  }, [nowMs, logs, decisions, holdIndefinite, registry, userAddress]);
+
   if (!loggedInUser) {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-8">
@@ -410,12 +527,24 @@ export default function Home() {
           </button>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={() => setActiveTab('traffic')}
-            className={`px-4 py-2 rounded font-bold ${activeTab === 'traffic' ? 'bg-red-600' : 'bg-slate-600 hover:bg-slate-500'}`}
-          >
-            Live Traffic
-          </button>
+          {(() => {
+            const actionCount = logs.filter(l => {
+              const s = getStatus(l);
+              return (s === 'MFA_REQUIRED' || s === 'BLOCKED') && !decisions[l.id];
+            }).length;
+            const badgeBg = actionCount === 0 ? 'bg-emerald-600' : actionCount < 5 ? 'bg-amber-500' : 'bg-red-600';
+            return (
+              <button
+                onClick={() => setActiveTab('traffic')}
+                className={`px-4 py-2 rounded font-bold flex items-center gap-2 ${activeTab === 'traffic' ? 'bg-red-600' : 'bg-slate-600 hover:bg-slate-500'}`}
+              >
+                Transactions
+                <span className={`text-xs font-black px-1.5 py-0.5 rounded-full ${badgeBg} text-white`}>
+                  {actionCount}
+                </span>
+              </button>
+            );
+          })()}
           <button
             onClick={() => setActiveTab('registryPolicy')}
             className={`px-4 py-2 rounded font-bold ${activeTab === 'registryPolicy' ? 'bg-red-600' : 'bg-slate-600 hover:bg-slate-500'}`}
@@ -526,6 +655,12 @@ export default function Home() {
           setTrafficResultsMvp2={setTrafficResultsMvp2}
           generating={generating}
           generatingMvp2={generatingMvp2}
+          generatingMvp3={mvp3Running}
+          mvp3Summary={mvp3Summary}
+          runMvp3FullSuite={runMvp3FullSuite}
+          complianceRefreshToken={complianceRefreshToken}
+          mvp1ScenarioCount={MVP1_SCENARIOS.length}
+          mvp2ScenarioCount={MVP2_SCENARIOS.length}
           generateTraffic={generateTraffic}
           generateTrafficMvp2={generateTrafficMvp2}
           fetchLogs={fetchLogs}
@@ -547,116 +682,427 @@ export default function Home() {
         </div>
       )}
 
-      {activeTab === 'traffic' && <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
-        <h2 className="text-xl mb-4 text-slate-300 underline underline-offset-8">Live Traffic Monitor</h2>
-        <p className="text-sm text-slate-500 mb-4">
-          Live transaction logs. Feature column maps each row to the scenario (MVP-1: C7, B2, E6, E7, E4; MVP-2: H1–H3, J1, K1, I2, B1). Run MVP tests in Audit & Export.
-        </p>
-        {logs.some((l) => getStatus(l) === 'MFA_REQUIRED') && (
-          <div className="mb-4 p-4 bg-amber-900/30 border border-amber-600/50 rounded-lg flex items-center gap-3">
-            <span className="text-2xl">⚠️</span>
-            <div>
-              <p className="font-bold text-amber-400">Your decision required</p>
-              <p className="text-sm text-amber-200/90">
-                One or more transactions need your approval. OCS assessed the risk — you decide whether to allow. Click &quot;View Forensics&quot; for details.
-              </p>
-            </div>
-          </div>
-        )}
-        <table className="w-full text-left border-collapse">
-          <thead>
-            <tr className="border-b border-slate-600 text-slate-400">
-              <th className="p-3 text-sm uppercase tracking-wider">Timestamp</th>
-              <th className="p-3 text-sm uppercase tracking-wider" title="Feature that produced this log (MVP-1: C7, B2, E6, E7, E4; MVP-2: H1–H3, J1, K1, I2, B1)">Feature</th>
-              <th className="p-3 text-sm uppercase tracking-wider">Target Address / Alert</th>
-              <th className="p-3 text-sm uppercase tracking-wider">Risk Score</th>
-              <th className="p-3 text-sm uppercase tracking-wider">Risk</th>
-              <th className="p-3 text-sm uppercase tracking-wider">Authorization</th>
-              <th className="p-3 text-sm uppercase tracking-wider text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {logs.length === 0 ? (
-              <tr><td colSpan={7} className="p-8 text-center text-slate-500 italic">No traffic detected. Standby...</td></tr>
-            ) : (
-              logs.map((log, i) => {
-                const status = getStatus(log);
-                const overridden = isAlreadyOverridden(log.destinationAddress, log.sourceAddress);
-                const isManualOverride = log.classification === 'Whitelist';
-                const details = parseForensicDetails(log.detailsJson ?? '');
-                const amount = details?.decisionMatrix?.currentAmount;
-                const reason = details?.trustRangeReason || log.reason || '';
-                const scenarioMvp2 = matchLogToScenarioMvp2(log.sourceAddress, log.destinationAddress, amount, reason);
-                const scenarioMvp1 = matchLogToScenario(log.sourceAddress, log.destinationAddress, amount);
-                const scenario = scenarioMvp2 ?? scenarioMvp1;
+      {activeTab === 'traffic' && <div className="space-y-4">
 
-                const rowBg = status === 'BLOCKED' ? 'bg-red-900/20' :
-                  status === 'MFA_REQUIRED' ? 'bg-amber-900/20' :
-                  isManualOverride ? 'bg-blue-900/10' : '';
+        {/* ── ACTION REQUIRED QUEUE ── */}
+        {(() => {
+          const holdTimeoutMs = getHoldTimeoutMs(registry, userAddress);
+          const actionLogs = logs.filter(l => {
+            const s = getStatus(l);
+            return (s === 'MFA_REQUIRED' || s === 'BLOCKED') && !decisions[l.id];
+          });
+          if (actionLogs.length === 0) return null;
+          return (
+            <div className="border border-slate-600 rounded-lg overflow-hidden shadow-2xl">
+              <div className="px-4 py-3 bg-slate-800/80 border-b border-slate-700 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-slate-200 text-sm">Action Required</span>
+                  <span className="text-xs font-bold bg-red-700 text-white px-2 py-0.5 rounded-full">{actionLogs.length}</span>
+                </div>
+                <p className="text-xs text-slate-500">OCS assessed the risk — you decide. Click a row to see full details.</p>
+              </div>
+              <div className="divide-y divide-slate-700/60">
+                {actionLogs.map(log => {
+                  const status = getStatus(log);
+                  const isMfa = status === 'MFA_REQUIRED';
+                  const details = parseForensicDetails(log.detailsJson ?? '');
+                  const matrix = details?.decisionMatrix;
+                  const amount = matrix?.currentAmount;
+                  const reason = details?.trustRangeReason || log.reason || '';
+                  const isExpanded = expandedAction === log.id;
+                  const isIndefiniteHold = Boolean(holdIndefinite[log.id]);
+                  const elapsedMs = nowMs - new Date(log.timestamp).getTime();
+                  const remainingMs = isIndefiniteHold ? Number.POSITIVE_INFINITY : Math.max(0, holdTimeoutMs - elapsedMs);
+                  const remainingSec = Math.floor((isIndefiniteHold ? 0 : remainingMs) / 1000);
+                  const countdownMins = Math.floor(remainingSec / 60);
+                  const countdownSecs = remainingSec % 60;
+                  const countdownStr = isIndefiniteHold ? '∞' : `${countdownMins}:${String(countdownSecs).padStart(2, '0')}`;
+                  const isExpiring = !isIndefiniteHold && remainingMs < 60_000; // last minute
 
-                return (
-                  <tr key={i} className={`border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors ${rowBg}`}>
-                    <td className="p-3 text-xs text-slate-500 font-mono">{formatTime(log.timestamp)}</td>
-                    <td className="p-3">
-                      {scenario ? (
-                        <span className="text-xs font-mono font-bold text-slate-300" title={scenario.label}>
-                          {scenario.featureId}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-slate-600">—</span>
-                      )}
-                    </td>
-                    <td className="p-3">
-                      <div className="font-mono text-xs text-slate-200">{log.destinationAddress}</div>
-                      <div className={`text-[10px] italic mt-1 font-bold ${isManualOverride ? 'text-blue-400' : (log.riskScore >= 51 ? 'text-yellow-500' : 'text-slate-400')}`}>
-                        {isManualOverride ? '🔹 ' : (log.riskScore >= 51 ? '⚠️ ' : '✅ ')} {log.reason || log.verdict}
-                      </div>
-                    </td>
-                    <td className="p-3 font-bold text-slate-300">{log.riskScore}/100</td>
-                    <td className="p-3">
-                      <span className={`text-[11px] px-2 py-0.5 rounded ${
-                        status === 'BLOCKED' ? 'bg-red-900/20 text-red-300' :
-                        status === 'MFA_REQUIRED' ? 'bg-amber-900/20 text-amber-300' :
-                        'bg-green-900/20 text-green-300'
-                      }`}>
-                        {getRiskLabel(status)}
-                      </span>
-                    </td>
-                    <td className="p-3">
-                      <span className={`font-black px-2 py-0.5 rounded text-[11px] ${
-                        status === 'BLOCKED' ? 'bg-red-900/30 text-red-400' :
-                        status === 'MFA_REQUIRED' ? 'bg-amber-900/30 text-amber-400' :
-                        'bg-green-900/30 text-green-400'
-                      }`} title="OCS assesses risk. You decide whether to allow the transaction.">
-                        {getAuthorizationLabel(status)}
-                      </span>
-                    </td>
-                    <td className="p-3 text-right flex gap-2 justify-end">
+                  return (
+                    <div key={log.id} className={isMfa ? 'bg-amber-950/20' : 'bg-red-950/20'}>
+                      {/* Row header — clickable to expand */}
                       <button
-                        onClick={() => setForensicLog(log)}
-                        className="text-[10px] bg-slate-600 hover:bg-slate-500 px-3 py-1 rounded font-bold uppercase tracking-tighter transition-all"
+                        type="button"
+                        onClick={() => setExpandedAction(isExpanded ? null : log.id)}
+                        className="w-full text-left px-4 py-3 hover:bg-slate-700/20 transition-colors"
                       >
-                        View Forensics
+                        <div className="flex items-center justify-between gap-4">
+                          {/* Left: addresses + reason */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={`text-xs font-bold px-2 py-0.5 rounded ${isMfa ? 'bg-amber-900/50 text-amber-300' : 'bg-red-900/50 text-red-300'}`}>
+                                {isMfa ? 'Requires Authorization' : 'Not Authorized'}
+                              </span>
+                              <span className="text-xs text-slate-500 font-mono">{formatTime(log.timestamp)}</span>
+                              {amount != null && (
+                                <span className="text-xs text-slate-400 font-mono">${Number(amount).toFixed(2)}</span>
+                              )}
+                              {/* Countdown timer — ∞ after undoing a timeout; no auto-expire until user acts */}
+                              <span className={`text-xs font-mono font-bold px-1.5 py-0.5 rounded ${
+                                isIndefiniteHold ? 'bg-sky-900/40 text-sky-200' :
+                                isExpiring ? 'bg-red-900/60 text-red-300 animate-pulse' :
+                                'bg-slate-700 text-slate-400'
+                              }`}
+                                title={isIndefiniteHold
+                                  ? 'Hold stays open until you choose Allow or Block — auto-expire is paused after a timeout undo.'
+                                  : 'Time remaining before this hold auto-expires as Block (timeout).'}>
+                                ⏱ {countdownStr}
+                              </span>
+                            </div>
+                            <div className="mt-1.5 flex items-center gap-1.5 font-mono text-xs text-slate-400 truncate">
+                              <span className="text-slate-500 truncate">{log.sourceAddress}</span>
+                              <span className="text-slate-600 shrink-0">→</span>
+                              <span className="text-slate-300 truncate">{log.destinationAddress}</span>
+                            </div>
+                            <p className="mt-1 text-xs text-slate-500 truncate">{reason}</p>
+                          </div>
+                          {/* Right: risk score + cross-map + Allow/Block */}
+                          <div className="flex items-center gap-3 shrink-0">
+                            <div className="text-right">
+                              <p className="text-lg font-black text-slate-200">{log.riskScore}<span className="text-xs text-slate-500">/100</span></p>
+                              <p className="text-[10px] text-slate-500">risk score</p>
+                            </div>
+                            {/* "In log" — scrolls to the matching row in the full traffic table */}
+                            <button
+                              type="button"
+                              onClick={e => {
+                                e.stopPropagation();
+                                const el = document.getElementById(`traffic-row-${log.id}`);
+                                if (el) {
+                                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                  setHighlightedLogId(log.id);
+                                  setTimeout(() => setHighlightedLogId(null), 2000);
+                                }
+                              }}
+                              className="text-[10px] text-slate-400 hover:text-slate-200 border border-slate-600 hover:border-slate-400 px-2 py-1 rounded transition-colors"
+                              title="Scroll to this row in the traffic log below"
+                            >
+                              ↓ In log
+                            </button>
+                            <div className="flex rounded-lg overflow-hidden border border-slate-600" onClick={e => e.stopPropagation()}>
+                              {/* Allow — opens confirmation modal (MFA phone code or escalation warning) */}
+                              <button
+                                type="button"
+                                onClick={() => setPendingAction({ logId: log.id, isMfa })}
+                                className={`px-3 py-1.5 text-xs font-bold capitalize transition-colors ${
+                                  isMfa
+                                    ? 'bg-amber-900/50 hover:bg-amber-900/70 text-amber-200'
+                                    : 'bg-red-900/50 hover:bg-red-900/70 text-red-200'
+                                }`}
+                              >
+                                Allow
+                              </button>
+                              {/* Block — MFA: same amber as Allow (50/50 choice); BLOCKED: green confirms the right call */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setHoldIndefinite(prev => { const n = { ...prev }; delete n[log.id]; return n; });
+                                  setDecisions(prev => ({ ...prev, [log.id]: 'blocked' }));
+                                }}
+                                className={`px-3 py-1.5 text-xs font-bold capitalize transition-colors ${
+                                  isMfa
+                                    ? 'bg-amber-900/50 hover:bg-amber-900/70 text-amber-200'
+                                    : 'bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-200'
+                                }`}
+                              >
+                                Block
+                              </button>
+                            </div>
+                            <span className="text-slate-600 text-sm">{isExpanded ? '▲' : '▼'}</span>
+                          </div>
+                        </div>
                       </button>
-                      {status !== 'APPROVED' && !isManualOverride && !overridden && (
-                        <button
-                          onClick={() => handleWhitelist(log.destinationAddress, log.sourceAddress)}
-                          className="text-[10px] bg-green-700 hover:bg-green-600 px-3 py-1 rounded font-black uppercase tracking-tighter transition-all"
-                        >
-                          Whitelist
-                        </button>
+
+                      {/* Inline expanded details */}
+                      {isExpanded && (
+                        <div className="px-4 pb-4 space-y-3 border-t border-slate-700/50 pt-3">
+                          {/* Risk advice */}
+                          <div className="p-3 rounded bg-slate-900/60 border border-slate-700">
+                            <p className="text-xs font-bold text-amber-400 mb-1">Risk Advice</p>
+                            <p className="text-sm text-slate-200">{details?.trustRangeReason || log.reason || '—'}</p>
+                            {details?.trustProfile && (
+                              <p className="text-xs text-slate-500 mt-1">Profile active: {details.trustProfile}</p>
+                            )}
+                          </div>
+
+                          {/* Decision matrix */}
+                          {matrix && (
+                            <div className="space-y-1.5">
+                              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Sovereign Decision Matrix</p>
+                              {[
+                                { label: 'Amount vs. Cap', value: `$${Number(matrix.currentAmount ?? 0).toFixed(2)} vs. $${Number(matrix.sovereignCap ?? 0).toFixed(2)}`, ok: Boolean(matrix.amountWithinCap) },
+                                { label: 'Risk vs. Allow Threshold', value: `${matrix.calculatedRisk ?? 0} vs. ${matrix.maxRiskFloor ?? 0}`, ok: Boolean(matrix.riskWithinFloor) },
+                                { label: 'Risk vs. Block Threshold', value: `${matrix.calculatedRisk ?? 0} vs. ${matrix.blockThreshold ?? 100}`, ok: (matrix.calculatedRisk ?? 0) < (matrix.blockThreshold ?? 100) },
+                                { label: 'Confidence vs. Ceiling', value: `${matrix.calculatedConfidence ?? 0}% vs. ${matrix.minConfidenceCeiling ?? 0}%`, ok: Boolean(matrix.confidenceAboveCeiling) },
+                              ].map(row => (
+                                <div key={row.label} className="flex items-center justify-between px-3 py-1.5 bg-slate-900/40 rounded text-xs">
+                                  <span className="text-slate-400">{row.label}</span>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono text-slate-400">{row.value}</span>
+                                    <span className={`w-2.5 h-2.5 rounded-full ${row.ok ? 'bg-green-500' : 'bg-red-500'}`} />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Brain analysis results */}
+                          {Array.isArray(details?.riskResults) && details.riskResults.length > 0 && (
+                            <div className="space-y-1.5">
+                              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Brain Analysis</p>
+                              {(details.riskResults as Array<Record<string, unknown>>).map((r, idx) => {
+                                const score = Number(r.riskScore ?? r.RiskScore ?? 0);
+                                const scoreColor = score >= 80 ? 'text-red-400' : score >= 50 ? 'text-amber-400' : 'text-green-400';
+                                return (
+                                  <div key={idx} className="flex items-center justify-between px-3 py-1.5 bg-slate-900/40 rounded text-xs">
+                                    <div className="min-w-0">
+                                      <span className={`font-medium ${scoreColor}`}>{String(r.testName ?? r.TestName ?? '—')}</span>
+                                      <span className={`ml-2 ${score >= 50 ? scoreColor : 'text-slate-500'} opacity-75`}>{String(r.verdict ?? r.Verdict ?? '')}</span>
+                                    </div>
+                                    <span className={`font-mono font-bold shrink-0 ml-2 ${scoreColor}`}>
+                                      {score}/100
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
                       )}
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── ALL TRAFFIC TABLE ── */}
+        <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
+          <h2 className="text-xl mb-4 text-slate-300 underline underline-offset-8">Live Traffic Monitor</h2>
+          <p className="text-sm text-slate-500 mb-4">
+            All transaction logs. Feature column maps each row to the scenario (MVP-1: C7, B2, E6, E7, E4; MVP-2: H1–H3, J1, K1, I2, B1). Run MVP tests in Audit &amp; Export.
+          </p>
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-slate-600 text-slate-400">
+                <th className="p-3 text-sm uppercase tracking-wider">Timestamp</th>
+                <th className="p-3 text-sm uppercase tracking-wider">Feature</th>
+                <th className="p-3 text-sm uppercase tracking-wider">Target Address / Alert</th>
+                <th className="p-3 text-sm uppercase tracking-wider">Risk Score</th>
+                <th className="p-3 text-sm uppercase tracking-wider">Risk</th>
+                <th className="p-3 text-sm uppercase tracking-wider">Authorization</th>
+                <th className="p-3 text-sm uppercase tracking-wider text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.length === 0 ? (
+                <tr><td colSpan={7} className="p-8 text-center text-slate-500 italic">No traffic detected. Standby...</td></tr>
+              ) : (
+                logs.map((log, i) => {
+                  const status = getStatus(log);
+                  const isManualOverride = log.classification === 'Whitelist';
+                  const details = parseForensicDetails(log.detailsJson ?? '');
+                  const amount = details?.decisionMatrix?.currentAmount;
+                  const reason = details?.trustRangeReason || log.reason || '';
+                  const scenarioMvp2 = matchLogToScenarioMvp2(log.sourceAddress, log.destinationAddress, amount, reason);
+                  const scenarioMvp1 = matchLogToScenario(log.sourceAddress, log.destinationAddress, amount);
+                  const scenario = scenarioMvp2 ?? scenarioMvp1;
+                  const decision = decisions[log.id];
+                  const isHighlighted = highlightedLogId === log.id;
+
+                  const rowBg = isHighlighted ? 'bg-sky-700/40 ring-1 ring-sky-500' :
+                    decision === 'allowed' ? 'bg-emerald-900/10' :
+                    decision === 'blocked_timeout' ? 'bg-amber-900/10' :
+                    decision === 'blocked' ? 'bg-slate-900/30' :
+                    status === 'BLOCKED' ? 'bg-red-900/20' :
+                    status === 'MFA_REQUIRED' ? 'bg-amber-900/20' :
+                    isManualOverride ? 'bg-blue-900/10' : '';
+
+                  return (
+                    <tr id={`traffic-row-${log.id}`} key={i} className={`border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors ${rowBg}`}>
+                      <td className="p-3 text-xs text-slate-500 font-mono">{formatTime(log.timestamp)}</td>
+                      <td className="p-3">
+                        {scenario ? (
+                          <span className="text-xs font-mono font-bold text-slate-300" title={scenario.label}>
+                            {scenario.featureId}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-600">—</span>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        <div className="font-mono text-xs text-slate-200">{log.destinationAddress}</div>
+                        <div className={`text-[10px] italic mt-1 font-bold ${isManualOverride ? 'text-blue-400' : (log.riskScore >= 51 ? 'text-yellow-500' : 'text-slate-400')}`}>
+                          {isManualOverride ? '🔹 ' : (log.riskScore >= 51 ? '⚠️ ' : '✅ ')} {log.reason || log.verdict}
+                        </div>
+                      </td>
+                      <td className="p-3 font-bold text-slate-300">{log.riskScore}/100</td>
+                      <td className="p-3">
+                        <span className={`text-[11px] px-2 py-0.5 rounded ${
+                          status === 'BLOCKED' ? 'bg-red-900/20 text-red-300' :
+                          status === 'MFA_REQUIRED' ? 'bg-amber-900/20 text-amber-300' :
+                          'bg-green-900/20 text-green-300'
+                        }`}>
+                          {getRiskLabel(status)}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        {decision ? (
+                          <div className="flex items-center gap-2">
+                            <span className={`font-black px-2 py-0.5 rounded text-[11px] ${
+                              decision === 'allowed' ? 'bg-emerald-900/30 text-emerald-400' :
+                              decision === 'blocked_timeout' ? 'bg-amber-900/35 text-amber-300' :
+                              'bg-slate-700 text-slate-400'
+                            }`}>
+                              {decision === 'allowed' ? 'Allowed by user' :
+                                decision === 'blocked_timeout' ? 'Block (timeout)' : 'Block (User)'}
+                            </span>
+                            {/* Only undoable for MFA/BLOCKED — APPROVED needs no action queue */}
+                            {(status === 'MFA_REQUIRED' || status === 'BLOCKED') && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const kind = decisions[log.id];
+                                  setDecisions(prev => { const n = { ...prev }; delete n[log.id]; return n; });
+                                  if (kind === 'blocked_timeout') {
+                                    setHoldIndefinite(prev => ({ ...prev, [log.id]: true }));
+                                  }
+                                }}
+                                className="text-[10px] text-slate-500 hover:text-slate-300 underline underline-offset-2 transition-colors"
+                                title={decision === 'blocked_timeout'
+                                  ? 'Restore to Action Required — hold stays open with no auto-expire until you decide'
+                                  : 'Return to Action Required queue (timer resumes from first seen)'}
+                              >
+                                undo
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className={`font-black px-2 py-0.5 rounded text-[11px] ${
+                            status === 'BLOCKED' ? 'bg-red-900/30 text-red-400' :
+                            status === 'MFA_REQUIRED' ? 'bg-amber-900/30 text-amber-400' :
+                            'bg-green-900/30 text-green-400'
+                          }`} title="OCS assesses risk. You decide whether to allow the transaction.">
+                            {getAuthorizationLabel(status)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3 text-right">
+                        <button
+                          onClick={() => setForensicLog(log)}
+                          className="text-[10px] bg-slate-600 hover:bg-slate-500 px-3 py-1 rounded font-bold uppercase tracking-tighter transition-all"
+                        >
+                          View Forensics
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>}
 
       {forensicLog && (
         <ForensicModal log={forensicLog} onClose={() => setForensicLog(null)} />
+      )}
+
+      {/* ── MFA CONFIRMATION MODAL ── */}
+      {pendingAction?.isMfa && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setPendingAction(null)}>
+          <div className="bg-slate-800 border border-amber-700/60 rounded-lg shadow-2xl max-w-md w-full" onClick={e => e.stopPropagation()}>
+            <div className="px-6 pt-6 pb-4 border-b border-slate-700 flex items-center gap-3">
+              <span className="text-2xl">📱</span>
+              <div>
+                <h3 className="text-lg font-bold text-amber-300">MFA Verification Required</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Transaction requires your explicit approval</p>
+              </div>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <p className="text-sm text-slate-300">
+                OCS has flagged this transaction as <strong className="text-amber-300">Requires Authorization</strong>. Before it can proceed, your identity must be confirmed via multi-factor authentication.
+              </p>
+              <div className="p-4 bg-amber-900/20 border border-amber-700/40 rounded-lg space-y-2">
+                <p className="text-xs font-bold text-amber-400 uppercase tracking-wider">Verification flow (coming in Pilot)</p>
+                <ol className="text-sm text-slate-300 space-y-1.5 list-decimal list-inside">
+                  <li>A 6-digit code will be sent to your registered phone number.</li>
+                  <li>Enter the code within 5 minutes to confirm.</li>
+                  <li>Transaction proceeds only after successful verification.</li>
+                </ol>
+              </div>
+              <p className="text-xs text-slate-500 italic">Phone-based MFA enforcement is not yet wired in this build. This is a placeholder for the Pilot phase (HC3).</p>
+            </div>
+            <div className="px-6 pb-5 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setPendingAction(null)}
+                className="px-4 py-2 text-sm bg-slate-700 hover:bg-slate-600 text-slate-200 rounded font-bold transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled
+                title="Phone MFA enforcement coming in Pilot (HC3)"
+                className="px-4 py-2 text-sm bg-amber-900/40 text-amber-500/60 rounded font-bold cursor-not-allowed flex items-center gap-2"
+              >
+                Send Code
+                <span className="text-[10px] font-normal text-amber-600/70 border border-amber-700/40 rounded px-1">Pilot</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── ESCALATION WARNING MODAL ── */}
+      {pendingAction && !pendingAction.isMfa && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setPendingAction(null)}>
+          <div className="bg-slate-800 border border-red-700/60 rounded-lg shadow-2xl max-w-md w-full" onClick={e => e.stopPropagation()}>
+            <div className="px-6 pt-6 pb-4 border-b border-slate-700 flex items-center gap-3">
+              <span className="text-2xl">⛔</span>
+              <div>
+                <h3 className="text-lg font-bold text-red-300">Override Warning</h3>
+                <p className="text-xs text-slate-400 mt-0.5">This transaction was assessed as Not Authorized</p>
+              </div>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <p className="text-sm text-slate-300">
+                You are attempting to <strong className="text-red-300">override a hard block</strong>. OCS assessed this transaction as high-risk. Proceeding requires supervisor sign-off and creates a formal escalation record.
+              </p>
+              <div className="p-4 bg-red-900/20 border border-red-700/40 rounded-lg space-y-2">
+                <p className="text-xs font-bold text-red-400 uppercase tracking-wider">Escalation requirements (coming in Pilot)</p>
+                <ul className="text-sm text-slate-300 space-y-1.5 list-disc list-inside">
+                  <li>Supervisor or administrator approval required.</li>
+                  <li>Escalation ticket automatically created and logged.</li>
+                  <li>Full audit trail entry with override justification.</li>
+                  <li>Risk accepted by authorizing party on record.</li>
+                </ul>
+              </div>
+              <p className="text-xs text-slate-500 italic">Escalation workflow is not yet wired in this build. This is a placeholder for the Pilot phase (HC4).</p>
+            </div>
+            <div className="px-6 pb-5 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setPendingAction(null)}
+                className="px-4 py-2 text-sm bg-slate-700 hover:bg-slate-600 text-slate-200 rounded font-bold transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled
+                title="Escalation workflow coming in Pilot (HC4)"
+                className="px-4 py-2 text-sm bg-red-900/40 text-red-500/60 rounded font-bold cursor-not-allowed flex items-center gap-2"
+              >
+                Request Escalation
+                <span className="text-[10px] font-normal text-red-600/70 border border-red-700/40 rounded px-1">Pilot</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>;
 }

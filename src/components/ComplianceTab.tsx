@@ -1,11 +1,13 @@
 "use client";
 import { useState, useEffect, useCallback } from 'react';
+import { runPi06ComplianceChecks, type Pi06CheckRow } from '@/lib/pi06ComplianceChecks';
+
+export type { Pi06CheckRow } from '@/lib/pi06ComplianceChecks';
 
 function arr<T>(v: unknown): T[] | null {
   return Array.isArray(v) ? (v as T[]) : null;
 }
 
-/** Read camelCase or PascalCase from Engine JSON (depends on serializer). */
 function pickTemplates(data: Record<string, unknown> | null): { id?: string; subject?: string }[] | null {
   if (!data) return null;
   return arr(data.templates) ?? arr(data.Templates);
@@ -16,16 +18,19 @@ function pickPlaybooks(data: Record<string, unknown> | null): { id?: string; nam
   return arr(data.playbooks) ?? arr(data.Playbooks);
 }
 
-export type Pi06CheckRow = {
-  id: string;
-  label: string;
-  criterion: string;
-  detail: string;
-  pass: boolean;
-};
-
 /** PI.06 Sprint 4: F4, E2, M2, H5, G4 — Compliance & Horizon diagnostics (embedded under Audit) */
-export default function ComplianceTab({ diagnosticsBase, getApiHeaders, embedded }: { diagnosticsBase: string; getApiHeaders: () => Promise<Record<string, string>>; embedded?: boolean }) {
+export default function ComplianceTab({
+  diagnosticsBase,
+  getApiHeaders,
+  embedded,
+  refreshToken = 0,
+}: {
+  diagnosticsBase: string;
+  getApiHeaders: () => Promise<Record<string, string>>;
+  embedded?: boolean;
+  /** Increment from parent (e.g. after MVP-3) to re-fetch and stay in sync */
+  refreshToken?: number;
+}) {
   const [f4, setF4] = useState<Record<string, unknown> | null>(null);
   const [e2, setE2] = useState<Record<string, unknown> | null>(null);
   const [h5, setH5] = useState<Record<string, unknown> | null>(null);
@@ -36,117 +41,34 @@ export default function ComplianceTab({ diagnosticsBase, getApiHeaders, embedded
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastCompletedAt, setLastCompletedAt] = useState<string | null>(null);
 
   const runComplianceChecks = useCallback(async () => {
     setRunning(true);
     setError(null);
     setFetchDiag([]);
+    setLoading(true);
     try {
-      const h = await getApiHeaders();
-      const paths = ['comms-templates', 'geofencing', 'eip7702-policy', 'playbooks'] as const;
-      const responses = await Promise.all(
-        paths.map((p) => fetch(`${diagnosticsBase}/${p}`, { headers: h }))
-      );
-      const diag: { path: string; status: number; hint?: string }[] = [];
-      responses.forEach((r, i) => {
-        let hint: string | undefined;
-        if (r.status === 403) hint = 'If A5 DApp allowlist is on, dashboard needs a matching X-Build-Id (see build-id.json).';
-        diag.push({ path: paths[i], status: r.status, hint });
-      });
-      setFetchDiag(diag);
-      const [rF4, rE2, rH5, rG4] = responses;
-      const jF4 = rF4.ok ? ((await rF4.json()) as Record<string, unknown>) : null;
-      const jE2 = rE2.ok ? ((await rE2.json()) as Record<string, unknown>) : null;
-      const jH5 = rH5.ok ? ((await rH5.json()) as Record<string, unknown>) : null;
-      const jG4 = rG4.ok ? ((await rG4.json()) as Record<string, unknown>) : null;
-      setF4(jF4);
-      setE2(jE2);
-      setH5(jH5);
-      setG4(jG4);
-
-      const f4List = pickTemplates(jF4);
-      const g4List = pickPlaybooks(jG4);
-      const travelKnown =
-        jE2 !== null
-        && (typeof jE2.travelModeEnabled === 'boolean' || typeof jE2.TravelModeEnabled === 'boolean');
-      const h5Known =
-        jH5 !== null
-        && (typeof jH5.blockUnverifiedDelegation === 'boolean' || typeof jH5.BlockUnverifiedDelegation === 'boolean');
-
-      const allGetOk = responses.every((r) => r.ok);
-      let m2Pass = false;
-      let m2Detail = 'Skipped (fix GET failures first)';
-      if (allGetOk) {
-        try {
-          const rM2 = await fetch(`${diagnosticsBase}/recovery-attestation`, {
-            method: 'POST',
-            headers: { ...h, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ attestationPayload: 'director-demo-stub', deviceId: 'compliance-tab' }),
-          });
-          const data = rM2.ok ? await rM2.json() : null;
-          const valid = data && typeof data === 'object' && 'valid' in data && (data as { valid?: boolean }).valid === true;
-          m2Pass = valid;
-          m2Detail = valid
-            ? 'POST 200, valid: true'
-            : rM2.ok
-              ? '200 but valid not true'
-              : `HTTP ${rM2.status}`;
-          setM2Status(valid ? 'Accepted (demo attestation)' : `HTTP ${rM2.status}`);
-        } catch (e) {
-          m2Pass = false;
-          m2Detail = e instanceof Error ? e.message : 'Request failed';
-          setM2Status('Request failed');
-        }
-      } else {
+      const result = await runPi06ComplianceChecks(diagnosticsBase, getApiHeaders);
+      if (result.error) {
+        setError(result.error);
+        setCheckRows(null);
+        setF4(null);
+        setE2(null);
+        setH5(null);
+        setG4(null);
         setM2Status('—');
+      } else {
+        setCheckRows(result.rows);
+        setFetchDiag(result.fetchDiag);
+        setF4(result.f4);
+        setE2(result.e2);
+        setH5(result.h5);
+        setG4(result.g4);
+        setM2Status(result.m2StatusLine);
+        setError(null);
       }
-
-      const rows: Pi06CheckRow[] = [
-        {
-          id: 'F4',
-          label: 'Customer comms templates',
-          criterion: 'GET comms-templates → 200, ≥1 template',
-          detail: rF4.ok && f4List && f4List.length > 0
-            ? `OK (${f4List.length} template(s))`
-            : !rF4.ok ? `HTTP ${rF4.status}` : '200 but empty templates',
-          pass: rF4.ok && !!f4List?.length,
-        },
-        {
-          id: 'E2',
-          label: 'Geofencing policy',
-          criterion: 'GET geofencing → 200, travel mode present',
-          detail: rE2.ok && travelKnown
-            ? `OK (travelMode=${String(jE2?.travelModeEnabled ?? jE2?.TravelModeEnabled)})`
-            : !rE2.ok ? `HTTP ${rE2.status}` : '200 but no travel flag',
-          pass: rE2.ok && travelKnown,
-        },
-        {
-          id: 'H5',
-          label: 'EIP-7702 abuse policy',
-          criterion: 'GET eip7702-policy → 200, block-unverified flag present',
-          detail: rH5.ok && h5Known
-            ? `OK (blockUnverifiedDelegation=${String(jH5?.blockUnverifiedDelegation ?? jH5?.BlockUnverifiedDelegation)})`
-            : !rH5.ok ? `HTTP ${rH5.status}` : '200 but no block flag',
-          pass: rH5.ok && h5Known,
-        },
-        {
-          id: 'G4',
-          label: 'Incident playbooks',
-          criterion: 'GET playbooks → 200, ≥1 playbook',
-          detail: rG4.ok && g4List && g4List.length > 0
-            ? `OK (${g4List.length} playbook(s))`
-            : !rG4.ok ? `HTTP ${rG4.status}` : '200 but empty playbooks',
-          pass: rG4.ok && !!g4List?.length,
-        },
-        {
-          id: 'M2',
-          label: 'Recovery attestation',
-          criterion: 'POST recovery-attestation → 200, valid: true',
-          detail: m2Detail,
-          pass: m2Pass,
-        },
-      ];
-      setCheckRows(rows);
+      setLastCompletedAt(new Date().toLocaleString());
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to fetch');
       setCheckRows(null);
@@ -158,7 +80,7 @@ export default function ComplianceTab({ diagnosticsBase, getApiHeaders, embedded
 
   useEffect(() => {
     void runComplianceChecks();
-  }, [runComplianceChecks]);
+  }, [runComplianceChecks, refreshToken]);
 
   const testM2 = async () => {
     try {
@@ -213,7 +135,16 @@ export default function ComplianceTab({ diagnosticsBase, getApiHeaders, embedded
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
           <div>
             <p className="text-sm font-bold text-slate-200">PI.06 verification — same idea as Run MVP-1 / MVP-2</p>
-            <p className="text-xs text-slate-500 mt-1">Each row must PASS for the Engine demo compliance surface to count as green.</p>
+            <p className="text-xs text-slate-500 mt-1">
+              <strong className="text-slate-400">Checks run as soon as you open this page</strong> (live API calls) — you do not need to click first.
+              That is why rows can already show ✓. <strong className="text-slate-400">Run PI.06 checks</strong> re-runs the same five probes; use it before a demo to refresh the timestamp.
+            </p>
+            {lastCompletedAt && (
+              <p className="text-[11px] text-slate-500 mt-1">Last completed: {lastCompletedAt}</p>
+            )}
+            <p className="text-[11px] text-slate-600 mt-1">
+              PI.06 ✓/✗ is only diagnostics reachability (F4–M2). <strong className="text-slate-500">It does not imply MVP-1 or MVP-2 passed</strong> — those are separate <code className="text-slate-500">check-risk</code> scenario tables below.
+            </p>
           </div>
           <button
             type="button"
