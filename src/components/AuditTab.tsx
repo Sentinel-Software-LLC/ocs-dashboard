@@ -88,99 +88,80 @@ export default function AuditTab(props: AuditTabProps) {
     document.getElementById('audit-manual-test')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
+  const mvpBusy = generating || generatingMvp2 || generatingMvp3 || mvpAutoSeed.phase === 'restoring';
+
   return (
     <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl space-y-8">
       <h2 className="text-xl text-slate-300 underline underline-offset-8">Audit & Export</h2>
       <p className="text-xs text-slate-500 -mt-4 mb-2">
         Jump:{' '}
-        <a href="#mvp3-suite" className="text-emerald-400 hover:underline">MVP-3 suite</a>
-        {' · '}
-        <a href="#pi06-compliance" className="text-emerald-400 hover:underline">PI.06 pass/fail</a>
+        <a href="#audit-manual-test" className="text-emerald-400 hover:underline">Manual &amp; exports</a>
         {' · '}
         <a href="#mvp1-demo" className="text-emerald-400 hover:underline">MVP-1</a>
         {' · '}
         <a href="#mvp2-demo" className="text-emerald-400 hover:underline">MVP-2</a>
         {' · '}
-        <a href="#audit-manual-test" className="text-emerald-400 hover:underline">Manual &amp; exports</a>
+        <a href="#mvp3-suite" className="text-emerald-400 hover:underline">MVP-3 + PI.06</a>
       </p>
 
-      <div id="mvp3-suite" className="scroll-mt-4 border border-violet-700/40 rounded-lg p-4 bg-violet-950/25">
-        <h3 className="text-lg font-bold text-violet-200 mb-2">MVP-3 — Prevention production (one-shot)</h3>
-        <p className="text-xs text-slate-400 mb-4">
-          Runs, in order: <strong className="text-slate-300">POST /api/diagnostics/seed</strong> (same data reset as Auto-configure, without switching tabs) →{' '}
-          <strong className="text-slate-300">PI.06</strong> diagnostics (5 probes on <code className="text-slate-500">/api/diagnostics/*</code>) →{' '}
-          <strong className="text-slate-300">MVP-1</strong> ({mvp1ScenarioCount} <code className="text-slate-500">check-risk</code> scenarios) →{' '}
-          <strong className="text-slate-300">MVP-2</strong> ({mvp2ScenarioCount} scenarios).
-          Result table below is the director-facing pass/fail breakdown.{' '}
-          <strong className="text-slate-500">PI.07</strong> user posture (Registry → Transaction Risk Checks) is not automated here — configure that separately.
-        </p>
-        <div className="overflow-x-auto mb-4">
-          <table className="w-full text-left text-xs border border-slate-600 rounded">
-            <thead>
-              <tr className="border-b border-slate-600 bg-slate-900/80 text-slate-500">
-                <th className="p-2">What you are proving</th>
-                <th className="p-2">Where it is exercised</th>
-              </tr>
-            </thead>
-            <tbody className="text-slate-400">
-              <tr className="border-b border-slate-700/60">
-                <td className="p-2 text-slate-300">PI.06 compliance / horizon stubs (F4, E2, H5, G4, M2)</td>
-                <td className="p-2 font-mono text-[11px]">GET/POST /api/diagnostics/… (see PI.06 block below)</td>
-              </tr>
-              <tr className="border-b border-slate-700/60">
-                <td className="p-2 text-slate-300">MVP-1 sovereign foundation (cap, lists, peeling, virgin, …)</td>
-                <td className="p-2 font-mono text-[11px]">POST /api/PGTAIL/check-risk — MVP-1 Results table</td>
-              </tr>
-              <tr className="border-b border-slate-700/60">
-                <td className="p-2 text-slate-300">MVP-2 enterprise guard (H1–I2, B1, …)</td>
-                <td className="p-2 font-mono text-[11px]">POST /api/PGTAIL/check-risk — MVP-2 Results table</td>
-              </tr>
-              <tr>
-                <td className="p-2 text-slate-300">PI.07 guard posture (Block/Allow per risk)</td>
-                <td className="p-2 font-mono text-[11px]">Registry &amp; Policy → Transaction Risk Checks (manual)</td>
-              </tr>
-            </tbody>
-          </table>
+      <div id="audit-manual-test" className="space-y-6 scroll-mt-4">
+        <h3 className="text-lg font-bold text-slate-300 mb-4">Manual Test &amp; exports</h3>
+        <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
+          <p className="text-xs text-slate-500 mb-3">Test check-risk with optional swap params. For DEX swaps, set Max Slippage % to enforce I2 guard.</p>
+          <CheckRiskForm
+            apiBase={apiBase}
+            onSuccess={fetchLogs}
+            presetVersion={manualTestPresetVersion}
+            preset={manualTestPreset}
+            presetLabel={manualTestPresetLabel}
+          />
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+
+        <div className="flex flex-wrap gap-4">
           <button
-            type="button"
-            onClick={() => void runMvp3FullSuite()}
-            disabled={generatingMvp3 || generating || generatingMvp2 || mvpAutoSeed.phase === 'restoring'}
-            className="bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm"
+            onClick={async () => {
+              try {
+                const res = await fetch(`${apiBase}/audit/export?format=csv`, { headers: await getApiHeaders() });
+                if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `ocs-disclosure-report-${new Date().toISOString().slice(0, 10)}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch {
+                // handled by parent
+              }
+            }}
+            className="bg-blue-600 hover:bg-blue-500 px-6 py-3 rounded font-bold"
           >
-            {generatingMvp3 ? '⏳ Running MVP-3 suite…' : '▶ Run MVP-3 full suite'}
+            Export Disclosure Report (CSV) — N1
           </button>
-          <span className="text-[11px] text-slate-500">
-            Uses factory demo registry after seed. For AWS, point the dashboard at the deployed Engine URL first.
-          </span>
+          <button
+            onClick={async () => {
+              try {
+                const res = await fetch(`${apiBase}/audit/export/signed`, { headers: await getApiHeaders() });
+                if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `ocs-forensics-signed-${new Date().toISOString().slice(0, 10)}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch {
+                // handled by parent
+              }
+            }}
+            className="bg-emerald-600 hover:bg-emerald-500 px-6 py-3 rounded font-bold"
+          >
+            Download Signed Forensics Bundle — F3
+          </button>
         </div>
-        {mvp3Summary && (
-          <div className={`mt-4 p-3 rounded-lg border text-sm ${mvp3Summary.allGreen ? 'border-emerald-700/50 bg-emerald-950/30 text-emerald-200' : 'border-amber-700/50 bg-amber-950/30 text-amber-100'}`}>
-            <p className="font-bold mb-2">MVP-3 last run — {mvp3Summary.finishedAt}</p>
-            <ul className="text-xs space-y-1 font-mono">
-              <li>PI.06: {mvp3Summary.pi06Pass}/{mvp3Summary.pi06Total} (diagnostics endpoints)</li>
-              <li>MVP-1: {mvp3Summary.mvp1Pass}/{mvp3Summary.mvp1Total} (check-risk vs canned expectations)</li>
-              <li>MVP-2: {mvp3Summary.mvp2Pass}/{mvp3Summary.mvp2Total} (check-risk vs canned expectations)</li>
-            </ul>
-            <p className="mt-2 text-xs font-sans">
-              {mvp3Summary.allGreen
-                ? 'All three bands green for this Engine and demo registry preset.'
-                : 'At least one band failed — scroll to PI.06 / MVP-1 / MVP-2 for row-level ✓/✗ (policy drift or Engine/CORS/allowlist).'}
-            </p>
-          </div>
-        )}
       </div>
 
-      <div id="pi06-compliance" className="scroll-mt-4 border border-slate-600 rounded-lg p-4 bg-slate-900/30">
-        <h3 className="text-lg font-bold text-slate-300 mb-2">PI.06 — Compliance &amp; Horizon</h3>
-        <p className="text-xs text-slate-500 mb-4">
-          <strong className="text-slate-400">Not</strong> a top nav tab — proof lives here. Use <strong className="text-slate-300">▶ Run PI.06 checks</strong> for a director-grade pass/fail table (F4, E2, H5, G4, M2). Registry → <em>Transaction Risk Checks</em> is PI.07 posture, not this PI.06 surface.
-        </p>
-        <ComplianceTab diagnosticsBase={diagnosticsBase} getApiHeaders={getApiHeaders} embedded refreshToken={complianceRefreshToken} />
-      </div>
-
-      <div>
+      <div className="border-t border-slate-600 pt-8">
         <h3 className="text-lg font-bold text-slate-300 mb-4">Automated MVP Demo</h3>
         <div className="mb-4 p-4 rounded-lg border border-slate-600 bg-slate-900/70 text-sm text-slate-300 space-y-2">
         <p>
@@ -191,11 +172,11 @@ export default function AuditTab(props: AuditTabProps) {
           <strong className="text-slate-200">canned expectation</strong> no longer matches your posture. ✓ / ✗ is “matched scripted demo,” not “engine broken.”
         </p>
         <p className="text-slate-400 text-xs">
-          <strong className="text-slate-200">Auto-configure policy for MVP</strong> (above Run) resets demo rows and clears overrides, then opens <strong className="text-slate-300">Registry &amp; Policy</strong> so <strong className="text-slate-300">Current Settings</strong> matches the MVP expectation table.
+          <strong className="text-slate-200">Auto-configure policy for MVP</strong> (under each Run block) resets demo rows and clears overrides, then opens <strong className="text-slate-300">Registry &amp; Policy</strong> so <strong className="text-slate-300">Current Settings</strong> matches the MVP expectation table.
         </p>
         </div>
         <p className="text-slate-400 text-sm mb-4">
-          <strong className="text-slate-300">MVP-1</strong> and <strong className="text-slate-300">MVP-2</strong> are both on this page — run either suite below without switching modes.
+          Order on this page: <strong className="text-slate-300">manual</strong> → <strong className="text-slate-300">MVP-1</strong> → <strong className="text-slate-300">MVP-2</strong> → <strong className="text-slate-300">MVP-3</strong> (seed + PI.06 + both suites). PI.06 diagnostics live inside MVP-3 at the bottom.
         </p>
         <div className="space-y-8">
           <div id="mvp1-demo" className="space-y-4 scroll-mt-4">
@@ -221,14 +202,14 @@ export default function AuditTab(props: AuditTabProps) {
                     <button
                       type="button"
                       onClick={() => autoConfigurePolicyForMvp()}
-                      disabled={mvpAutoSeed.phase === 'restoring' || generating || generatingMvp2}
+                      disabled={mvpBusy}
                       className="bg-slate-600 hover:bg-slate-500 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm border border-slate-500"
                     >
                       Auto-configure policy for MVP
                     </button>
                     <button
                       onClick={generateTraffic}
-                      disabled={generating || generatingMvp2 || mvpAutoSeed.phase === 'restoring'}
+                      disabled={mvpBusy}
                       className="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-600 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm"
                     >
                       {generating ? '⏳ Running…' : '▶ Run MVP-1'}
@@ -293,14 +274,14 @@ export default function AuditTab(props: AuditTabProps) {
                     <button
                       type="button"
                       onClick={() => autoConfigurePolicyForMvp()}
-                      disabled={mvpAutoSeed.phase === 'restoring' || generating || generatingMvp2}
+                      disabled={mvpBusy}
                       className="bg-slate-600 hover:bg-slate-500 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm border border-slate-500"
                     >
                       Auto-configure policy for MVP
                     </button>
                     <button
                       onClick={generateTrafficMvp2}
-                      disabled={generatingMvp2 || generating || mvpAutoSeed.phase === 'restoring'}
+                      disabled={mvpBusy}
                       className="bg-amber-600 hover:bg-amber-500 disabled:bg-slate-600 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm"
                     >
                       {generatingMvp2 ? '⏳ Running…' : '▶ Run MVP-2'}
@@ -354,60 +335,82 @@ export default function AuditTab(props: AuditTabProps) {
         </div>
       </div>
 
-      <div id="audit-manual-test" className="border-t border-slate-600 pt-8 space-y-6 scroll-mt-4">
-        <h3 className="text-lg font-bold text-slate-300 mb-4">Manual Test</h3>
-        <div className="p-4 rounded-lg border border-slate-600 bg-slate-900/50">
-          <p className="text-xs text-slate-500 mb-3">Test check-risk with optional swap params. For DEX swaps, set Max Slippage % to enforce I2 guard.</p>
-          <CheckRiskForm
-            apiBase={apiBase}
-            onSuccess={fetchLogs}
-            presetVersion={manualTestPresetVersion}
-            preset={manualTestPreset}
-            presetLabel={manualTestPresetLabel}
-          />
+      <div id="mvp3-suite" className="scroll-mt-4 border border-violet-700/40 rounded-lg p-4 bg-violet-950/25">
+        <h3 className="text-lg font-bold text-violet-200 mb-2">MVP-3 — Prevention production + PI.06</h3>
+        <p className="text-xs text-slate-400 mb-4">
+          One-shot order: <strong className="text-slate-300">POST /api/diagnostics/seed</strong> (reset demo registry, no tab switch) →{' '}
+          <strong className="text-slate-300">PI.06</strong> diagnostics (5 probes) →{' '}
+          <strong className="text-slate-300">MVP-1</strong> ({mvp1ScenarioCount} <code className="text-slate-500">check-risk</code>) →{' '}
+          <strong className="text-slate-300">MVP-2</strong> ({mvp2ScenarioCount}).
+          The <strong className="text-slate-400">PI.06</strong> tables are included in this same card (scroll down) so they are not a separate “orphan” section.
+          <strong className="text-slate-500"> PI.07</strong> posture (Registry → Transaction Risk Checks) stays manual.
+        </p>
+        <div className="overflow-x-auto mb-4">
+          <table className="w-full text-left text-xs border border-slate-600 rounded">
+            <thead>
+              <tr className="border-b border-slate-600 bg-slate-900/80 text-slate-500">
+                <th className="p-2">What you are proving</th>
+                <th className="p-2">Where it is exercised</th>
+              </tr>
+            </thead>
+            <tbody className="text-slate-400">
+              <tr className="border-b border-slate-700/60">
+                <td className="p-2 text-slate-300">PI.06 compliance / horizon stubs (F4, E2, H5, G4, M2)</td>
+                <td className="p-2 font-mono text-[11px]">GET/POST /api/diagnostics/… — tables below in this MVP-3 section</td>
+              </tr>
+              <tr className="border-b border-slate-700/60">
+                <td className="p-2 text-slate-300">MVP-1 sovereign foundation</td>
+                <td className="p-2 font-mono text-[11px]">POST /api/PGTAIL/check-risk — MVP-1 Results (above)</td>
+              </tr>
+              <tr className="border-b border-slate-700/60">
+                <td className="p-2 text-slate-300">MVP-2 enterprise guard</td>
+                <td className="p-2 font-mono text-[11px]">POST /api/PGTAIL/check-risk — MVP-2 Results (above)</td>
+              </tr>
+              <tr>
+                <td className="p-2 text-slate-300">PI.07 guard posture (Block/Allow)</td>
+                <td className="p-2 font-mono text-[11px]">Registry &amp; Policy → Transaction Risk Checks</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void runMvp3FullSuite()}
+            disabled={mvpBusy}
+            className="bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm"
+          >
+            {generatingMvp3 ? '⏳ Running MVP-3 suite…' : '▶ Run MVP-3 full suite'}
+          </button>
+          <span className="text-[11px] text-slate-500">
+            After this completes, scroll down for refreshed PI.06 detail cards. For AWS, set the Engine URL first.
+          </span>
+        </div>
+        {mvp3Summary && (
+          <div className={`mt-4 p-3 rounded-lg border text-sm ${mvp3Summary.allGreen ? 'border-emerald-700/50 bg-emerald-950/30 text-emerald-200' : 'border-amber-700/50 bg-amber-950/30 text-amber-100'}`}>
+            <p className="font-bold mb-2">MVP-3 last run — {mvp3Summary.finishedAt}</p>
+            <ul className="text-xs space-y-1 font-mono">
+              <li>PI.06: {mvp3Summary.pi06Pass}/{mvp3Summary.pi06Total} (diagnostics endpoints)</li>
+              <li>MVP-1: {mvp3Summary.mvp1Pass}/{mvp3Summary.mvp1Total} (check-risk vs canned expectations)</li>
+              <li>MVP-2: {mvp3Summary.mvp2Pass}/{mvp3Summary.mvp2Total} (check-risk vs canned expectations)</li>
+            </ul>
+            <p className="mt-2 text-xs font-sans">
+              {mvp3Summary.allGreen
+                ? 'All three bands green for this Engine and demo registry preset.'
+                : 'At least one band failed — scroll up for MVP-1/MVP-2 row detail, or down for PI.06 diagnostics (allowlist/CORS/policy drift).'}
+            </p>
+          </div>
+        )}
 
-        <div className="flex flex-wrap gap-4">
-          <button
-            onClick={async () => {
-              try {
-                const res = await fetch(`${apiBase}/audit/export?format=csv`, { headers: await getApiHeaders() });
-                if (!res.ok) throw new Error(`Export failed: ${res.status}`);
-                const blob = await res.blob();
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `ocs-disclosure-report-${new Date().toISOString().slice(0, 10)}.csv`;
-                a.click();
-                URL.revokeObjectURL(url);
-              } catch {
-                // handled by parent
-              }
-            }}
-            className="bg-blue-600 hover:bg-blue-500 px-6 py-3 rounded font-bold"
-          >
-            Export Disclosure Report (CSV) — N1
-          </button>
-          <button
-            onClick={async () => {
-              try {
-                const res = await fetch(`${apiBase}/audit/export/signed`, { headers: await getApiHeaders() });
-                if (!res.ok) throw new Error(`Export failed: ${res.status}`);
-                const blob = await res.blob();
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `ocs-forensics-signed-${new Date().toISOString().slice(0, 10)}.json`;
-                a.click();
-                URL.revokeObjectURL(url);
-              } catch {
-                // handled by parent
-              }
-            }}
-            className="bg-emerald-600 hover:bg-emerald-500 px-6 py-3 rounded font-bold"
-          >
-            Download Signed Forensics Bundle — F3
-          </button>
+        <div id="pi06-diagnostics" className="mt-6 pt-6 border-t border-violet-800/40 scroll-mt-4">
+          <h4 className="text-base font-bold text-slate-200 mb-2">PI.06 diagnostics detail</h4>
+          <ComplianceTab
+            diagnosticsBase={diagnosticsBase}
+            getApiHeaders={getApiHeaders}
+            embedded
+            refreshToken={complianceRefreshToken}
+            externalBusy={generatingMvp3}
+          />
         </div>
       </div>
     </div>

@@ -394,7 +394,7 @@ export default function Home() {
       await fetchRegistry();
       setRegistryConfiguratorSync((n) => n + 1);
 
-      const pi06 = await runPi06ComplianceChecks(DIAGNOSTICS_BASE, getApiHeaders);
+      const pi06 = await runPi06ComplianceChecks(DIAGNOSTICS_BASE, getApiHeaders, 'mvp3Suite');
       if (pi06.error) throw new Error(pi06.error);
       setComplianceRefreshToken((t) => t + 1);
 

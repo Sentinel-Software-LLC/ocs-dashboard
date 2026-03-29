@@ -38,9 +38,13 @@ export type Pi06ComplianceRunResult = {
   error: string | null;
 };
 
+/** `standalone` = Audit tab / user refresh (M2 label: demo attestation). `mvp3Suite` = full MVP-3 orchestrator (M2 label: full suite). */
+export type Pi06RunContext = 'standalone' | 'mvp3Suite';
+
 export async function runPi06ComplianceChecks(
   diagnosticsBase: string,
   getApiHeaders: () => Promise<Record<string, string>>,
+  context: Pi06RunContext = 'standalone',
 ): Promise<Pi06ComplianceRunResult> {
   const empty: Pi06ComplianceRunResult = {
     rows: [],
@@ -88,12 +92,18 @@ export async function runPi06ComplianceChecks(
     let m2Detail = 'Skipped (fix GET failures first)';
     let m2StatusLine = '—';
 
+    const m2Payload =
+      context === 'mvp3Suite'
+        ? { attestationPayload: 'mvp3-suite-stub', deviceId: 'mvp3-orchestrator' }
+        : { attestationPayload: 'director-demo-stub', deviceId: 'compliance-tab' };
+    const m2OkLabel = context === 'mvp3Suite' ? 'Accepted (MVP-3 full suite)' : 'Accepted (demo attestation)';
+
     if (allGetOk) {
       try {
         const rM2 = await fetch(`${diagnosticsBase}/recovery-attestation`, {
           method: 'POST',
           headers: { ...h, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ attestationPayload: 'mvp3-suite-stub', deviceId: 'mvp3-orchestrator' }),
+          body: JSON.stringify(m2Payload),
         });
         const data = rM2.ok ? await rM2.json() : null;
         const valid = data && typeof data === 'object' && 'valid' in data && (data as { valid?: boolean }).valid === true;
@@ -103,7 +113,7 @@ export async function runPi06ComplianceChecks(
           : rM2.ok
             ? '200 but valid not true'
             : `HTTP ${rM2.status}`;
-        m2StatusLine = valid ? 'Accepted (MVP-3 run)' : `HTTP ${rM2.status}`;
+        m2StatusLine = valid ? m2OkLabel : `HTTP ${rM2.status}`;
       } catch (e) {
         m2Pass = false;
         m2Detail = e instanceof Error ? e.message : 'Request failed';

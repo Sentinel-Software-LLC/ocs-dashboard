@@ -24,12 +24,15 @@ export default function ComplianceTab({
   getApiHeaders,
   embedded,
   refreshToken = 0,
+  externalBusy = false,
 }: {
   diagnosticsBase: string;
   getApiHeaders: () => Promise<Record<string, string>>;
   embedded?: boolean;
   /** Increment from parent (e.g. after MVP-3) to re-fetch and stay in sync */
   refreshToken?: number;
+  /** When true (e.g. MVP-3 suite running), disable refresh */
+  externalBusy?: boolean;
 }) {
   const [f4, setF4] = useState<Record<string, unknown> | null>(null);
   const [e2, setE2] = useState<Record<string, unknown> | null>(null);
@@ -132,27 +135,29 @@ export default function ComplianceTab({
       )}
 
       <div className="mb-6 p-4 rounded-lg border border-slate-600 bg-slate-900/60">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-          <div>
-            <p className="text-sm font-bold text-slate-200">PI.06 verification — same idea as Run MVP-1 / MVP-2</p>
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold text-slate-200">PI.06 diagnostics (F4, E2, H5, G4, M2)</p>
             <p className="text-xs text-slate-500 mt-1">
-              <strong className="text-slate-400">Checks run as soon as you open this page</strong> (live API calls) — you do not need to click first.
-              That is why rows can already show ✓. <strong className="text-slate-400">Run PI.06 checks</strong> re-runs the same five probes; use it before a demo to refresh the timestamp.
+              These five probes load automatically when this section is shown. <strong className="text-slate-400">Run MVP-3 full suite</strong> (in this MVP-3 card, above)
+              runs them after seed; M2 is then tagged as the full-suite flow on the server. <strong className="text-slate-400">Refresh PI.06 only</strong> re-runs the same probes
+              with a <em>standalone</em> M2 label (<q>demo attestation</q>) — use that when you are not running the whole MVP-3 pipeline.
             </p>
             {lastCompletedAt && (
               <p className="text-[11px] text-slate-500 mt-1">Last completed: {lastCompletedAt}</p>
             )}
             <p className="text-[11px] text-slate-600 mt-1">
-              PI.06 ✓/✗ is only diagnostics reachability (F4–M2). <strong className="text-slate-500">It does not imply MVP-1 or MVP-2 passed</strong> — those are separate <code className="text-slate-500">check-risk</code> scenario tables below.
+              PI.06 ✓/✗ = <code className="text-slate-500">/api/diagnostics/*</code> only. <strong className="text-slate-500">MVP-1 / MVP-2 ✓/✗</strong> ={' '}
+              <code className="text-slate-500">check-risk</code> scenarios (separate tables on this page).
             </p>
           </div>
           <button
             type="button"
             onClick={() => runComplianceChecks()}
-            disabled={running}
-            className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded font-bold text-sm shrink-0"
+            disabled={running || externalBusy}
+            className="text-xs text-sky-400 hover:text-sky-300 disabled:opacity-40 disabled:cursor-not-allowed underline shrink-0 mt-1"
           >
-            {running ? '⏳ Running…' : '▶ Run PI.06 checks'}
+            {running ? 'Refreshing…' : 'Refresh PI.06 only'}
           </button>
         </div>
         {checkRows && checkRows.length > 0 && (
