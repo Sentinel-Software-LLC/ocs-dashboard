@@ -4,6 +4,7 @@ import { getApiHeaders } from '@/lib/api';
 import type { RiskLog, ForensicDetails } from '@/types/risk';
 import SovereignConfigurator from '@/components/SovereignConfigurator';
 import AuditTab from '@/components/AuditTab';
+import GovernanceTab from '@/components/GovernanceTab';
 import { MVP1_SCENARIOS, statusToOutcome, matchLogToScenario, type Mvp1Scenario, type ScenarioOutcome } from '@/types/mvp1Scenarios';
 import { MVP2_SCENARIOS, statusToOutcomeMvp2, matchLogToScenarioMvp2, type Mvp2Scenario } from '@/types/mvp2Scenarios';
 
@@ -117,7 +118,7 @@ export default function Home() {
   const [logs, setLogs] = useState<RiskLog[]>([]);
   const [forensicLog, setForensicLog] = useState<RiskLog | null>(null);
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
-  const [activeTab, setActiveTab] = useState<'traffic' | 'registryPolicy' | 'audit'>('traffic');
+  const [activeTab, setActiveTab] = useState<'traffic' | 'registryPolicy' | 'audit' | 'governance'>('traffic');
   /** Selected wallet for policy config. Set from My Wallets or Registry Configure. */
   const [userAddress, setUserAddress] = useState('test_trusted_partner');
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -428,6 +429,12 @@ export default function Home() {
             Audit & Export
           </button>
           <button
+            onClick={() => setActiveTab('governance')}
+            className={`px-4 py-2 rounded font-bold ${activeTab === 'governance' ? 'bg-red-600' : 'bg-slate-600 hover:bg-slate-500'}`}
+          >
+            Governance
+          </button>
+          <button
             onClick={activeTab === 'registryPolicy' ? fetchRegistry : clearTrafficLogs}
             className={activeTab === 'registryPolicy' ? 'bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded font-bold transition-all shadow-lg active:scale-95' : 'bg-slate-600 hover:bg-slate-500 px-4 py-2 rounded font-bold transition-all shadow-lg active:scale-95'}
             title={activeTab === 'registryPolicy' ? 'Refresh registry' : 'Clear traffic logs (DB + UI)'}
@@ -496,6 +503,14 @@ export default function Home() {
               onToggleIncidentSwitch={toggleIncidentSwitch}
             />
           </div>
+        </div>
+      )}
+
+      {activeTab === 'governance' && (
+        <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 shadow-2xl">
+          <h2 className="text-xl mb-1 text-slate-300 underline underline-offset-8">Sovereign Governance</h2>
+          <p className="text-xs text-slate-500 mb-6">Whitelist and blacklist management. Commits are signed server-side — admin key never leaves this server.</p>
+          <GovernanceTab />
         </div>
       )}
 
