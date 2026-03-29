@@ -188,23 +188,6 @@ export default function Home() {
     }
   };
 
-  const isAlreadyOverridden = (address: string, sender: string) => {
-    return logs.some((log) =>
-      log.classification === 'Whitelist' &&
-      log.destinationAddress.toLowerCase() === address.toLowerCase() &&
-      log.sourceAddress.toLowerCase() === sender.toLowerCase()
-    );
-  };
-
-  const handleWhitelist = async (targetAddress: string, userAddress: string) => {
-    const response = await fetch(`${API_BASE}/whitelist`, {
-      method: 'POST',
-      headers: { ...await getApiHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address: targetAddress, userAddress })
-    });
-    if (response.ok) await fetchLogs();
-  };
-
   const fetchRegistry = async () => {
     try {
       const res = await fetch(`${API_BASE}/registry`, { headers: await getApiHeaders() });
